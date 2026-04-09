@@ -266,14 +266,102 @@ Thumbs.db
 docker-compose.override.yml
 ```
 
+## Issue Tracking — Bug & Problem Management
+
+### When to Create a Bug Issue
+
+During development, debugging, and troubleshooting, create a GitHub issue when:
+
+- **A bug required real investigation** — not a typo, but a problem that took debugging to understand
+- **OKX API behavior differs from documentation** — undocumented quirks, unexpected responses, rate limit nuances
+- **Dependency incompatibility or breaking change** — version conflicts, missing features, platform-specific failures
+- **Edge case discovered that needs architectural change** — not just a test fix, but a design gap
+- **Data integrity risk** — anything that could cause incorrect P&L calculation, budget tracking errors, or missed stop-losses
+- **Production-impacting issue** — even if quickly fixed, document it for the post-mortem record
+
+### When NOT to Create an Issue (just fix inline)
+
+- Typos, lint errors, formatting fixes
+- Obvious mock/test setup mistakes
+- Config value adjustments
+- Import ordering, unused variable cleanup
+
+### Bug Issue Workflow
+
+```
+1. Hit a problem during development
+2. Assess: trivial fix or real investigation?
+   ├── Trivial → fix inline, no issue needed
+   └── Significant → continue to step 3
+3. Create issue BEFORE fixing (captures the raw problem state):
+   - Title: `bug(<scope>): <concise description>`
+   - Label: `bug` + relevant phase label
+   - Body: symptoms, root cause (if known), environment details
+4. Fix the bug
+5. Commit referencing the issue: `fix(exchange): handle empty ticker response — Closes #25`
+6. Close the issue (automatically via commit, or manually with resolution notes)
+```
+
+### Bug Issue Template
+
+```markdown
+## Bug: <title>
+
+**Discovered during:** Phase X — <what you were building/testing>
+**Severity:** critical | major | minor
+**Component:** exchange | risk | strategy | config | db
+
+### Symptoms
+What went wrong. Error messages, unexpected behavior, test failures.
+
+### Root Cause
+Why it happened. The actual underlying problem.
+
+### Environment
+- Python version, OS, dependency versions if relevant
+- OKX demo vs live mode
+- Config values that trigger the issue
+
+### Fix
+What was changed to resolve it. Reference the commit.
+
+### Prevention
+How to prevent similar issues. New test added? Validation rule? Documentation update?
+```
+
+### Severity Guide
+
+| Severity | Definition | Example |
+|---|---|---|
+| **critical** | Could cause financial loss, data corruption, or safety invariant violation | Stop-loss not placed, budget check bypassed, wrong order size |
+| **major** | Breaks core functionality, requires investigation, blocks progress | OKX API auth failing silently, candle data gaps, retry not triggering |
+| **minor** | Inconvenience, workaround exists, non-blocking | Log formatting issue, slow test, config error message unclear |
+
+### Labels for Bug Issues
+
+- `bug` — always present
+- `phase:N-*` — which phase it was discovered in
+- `critical` — for severity:critical bugs (financial risk)
+- `okx-quirk` — for OKX API documentation gaps or undocumented behavior
+
+### Post-Resolution
+
+After closing a bug issue, consider:
+1. **Add a test** that would have caught this bug
+2. **Update CLAUDE.md** if it reveals a new convention or OKX-specific note
+3. **Update config validation** if bad config caused the bug
+4. **Add to OKX-Specific Notes** section if it's an exchange quirk
+
+This builds a knowledge base — when a similar problem appears later, the closed issue provides context and the fix approach.
+
 ## Coding Conventions
 
 ### Python Style
 
-- **Python 3.12+** features allowed: `match` statements, `type X = ...` aliases, `X | Y` unions
+- **Python 3.11+** features allowed: `match` statements, `X | Y` unions, `StrEnum`
 - **Ruff** for linting + formatting — single tool, no black/isort/flake8 needed
   - Line length: 100
-  - Target: `py312`
+  - Target: `py311`
   - Select: `["E", "F", "W", "I", "N", "UP", "B", "A", "SIM", "RUF"]`
 - **No trailing whitespace**, UTF-8 encoding, LF line endings
 - **Imports**: stdlib → third-party → local, separated by blank lines (Ruff `I` handles this)
