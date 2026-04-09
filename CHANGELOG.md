@@ -8,6 +8,12 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Phase 4: Execution** — Order executor, portfolio tracker, and WebSocket market feed
+  - `OrderExecutor` — places orders with triple barrier (SL + TP + time limit) (#12)
+  - `PortfolioTracker` — tracks open trades, P&L, persists to SQLite, detects orphans on startup (#13)
+  - `MarketFeed` — WebSocket real-time ticker streaming with auto-reconnect (#14)
+  - `TrackedTrade` dataclass with unrealized P&L calculation
+  - Time-limit expiry checking and automatic position closure
 - **Phase 3: Strategy Engine** — Strategy interface, momentum strategy, and data pipeline
   - `IStrategy` ABC with `populate_indicators`, `populate_entry_trend`, `populate_exit_trend` (#9)
   - `Signal` enum (BUY/SELL/HOLD) and `SignalResult` dataclass with confidence and SL/TP (#9)
