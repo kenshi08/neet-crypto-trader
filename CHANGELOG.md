@@ -8,8 +8,18 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
-- Phase 2: Risk Engine (in progress)
+- **Phase 2: Risk Engine** — Budget management, position sizing, and protection plugins
+  - `BudgetManager` with weekly/monthly budget tracking, loss/gain limits, SQLite persistence (#4)
+  - `PositionSizer` with risk-based per-trade sizing, confidence scaling, budget caps (#5)
+  - `RiskManager` central gate orchestrating all risk checks before every trade (#6)
+  - `StoplossGuard` — locks trading after N consecutive stop-losses within lookback period (#7)
+  - `MaxDrawdown` — stops trading when drawdown from high-water mark exceeds threshold (#7)
+  - `CooldownPeriod` — enforces wait time between trades on same pair (#7)
+  - `ProtectionManager` chaining all protection plugins (#7)
+  - `Database` async SQLite layer with trades, budget_periods, daily_stats tables (#8)
   - Extracted exception hierarchy to `src/nct/exceptions.py` for cross-module use
+- `README.md` with quick start, configuration reference, project structure, safety notes
+- `CHANGELOG.md` following Keep a Changelog format
 
 ## [0.1.0] - 2026-04-09
 
