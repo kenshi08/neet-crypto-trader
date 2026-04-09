@@ -8,6 +8,11 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Phase 6: Hardening** — Backtesting, Telegram bot, Docker deployment, second strategy
+  - Backtesting engine with SL/TP simulation, Sharpe ratio, max drawdown, win rate metrics (#18)
+  - Telegram bot — trade notifications, `/status`, `/stop` kill switch, `/balance` commands (#19)
+  - Docker deployment — multi-stage Dockerfile, docker-compose with Synology NAS support (#20)
+  - `MeanReversionStrategy` — Bollinger Bands + volume confirmation for ranging markets (#21)
 - **Phase 5: Main Loop** — TradingAgent orchestrator, graceful shutdown, structured logging
   - `TradingAgent` orchestrator wiring all components into autonomous trading loop (#15)
   - Graceful shutdown on SIGINT/SIGTERM — cancels orders, persists state, closes DB (#16)

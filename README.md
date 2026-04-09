@@ -89,6 +89,8 @@ src/nct/
   strategy/
     base.py           # IStrategy ABC
     momentum.py       # RSI + MACD strategy
+    mean_reversion.py # Bollinger Bands + volume strategy
+    data_provider.py  # OHLCV fetching, caching, DataFrame conversion
   risk/
     budget_manager.py # Weekly/monthly budget tracking
     position_sizer.py # Per-trade sizing
@@ -96,6 +98,9 @@ src/nct/
     protections.py    # Circuit breakers (StoplossGuard, MaxDrawdown)
   portfolio/
     tracker.py        # Position tracking, P&L
+  executor.py         # Order execution with triple barrier
+  notifier.py         # Telegram bot (optional)
+  logging_setup.py    # Structured logging config
 ```
 
 ## Development
@@ -109,6 +114,12 @@ ruff check src/ tests/
 
 # Run the bot (demo mode)
 nct
+
+# Run backtester
+python scripts/backtest.py --pair BTC-USDT --timeframe 15m --limit 300
+
+# Deploy with Docker
+docker compose up -d
 ```
 
 ## Safety
@@ -138,7 +149,7 @@ See [GitHub Issues](https://github.com/kenshi08/neet-crypto-trader/issues) for t
 - **Phase 3** — Strategy Engine (IStrategy ABC, momentum strategy)
 - **Phase 4** — Execution (order executor, portfolio tracker, WebSocket feed)
 - **Phase 5** — Main Loop (orchestrator, graceful shutdown, structured logging)
-- **Phase 6** — Hardening (backtesting, Telegram bot, Docker, second strategy, LLM layer)
+- **Phase 6** — Hardening (backtesting, Telegram bot, Docker, second strategy, LLM layer) — **Done**
 
 ## License
 

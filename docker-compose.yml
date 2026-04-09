@@ -1,0 +1,15 @@
+services:
+  nct:
+    build: .
+    container_name: neet-crypto-trader
+    restart: always
+    env_file: .env
+    volumes:
+      - ./config:/app/config:ro
+      - ./data:/app/data
+      - ./logs:/app/logs
+    mem_limit: 512m
+    cpus: 0.5
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
