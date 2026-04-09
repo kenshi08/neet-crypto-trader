@@ -8,6 +8,13 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Phase 3: Strategy Engine** — Strategy interface, momentum strategy, and data pipeline
+  - `IStrategy` ABC with `populate_indicators`, `populate_entry_trend`, `populate_exit_trend` (#9)
+  - `Signal` enum (BUY/SELL/HOLD) and `SignalResult` dataclass with confidence and SL/TP (#9)
+  - `strategy_safe_wrapper` decorator — catches strategy exceptions, logs, continues (#9)
+  - `MomentumStrategy` — RSI + MACD crossover with ATR-based dynamic SL/TP (#10)
+  - `DataProvider` — OHLCV fetching with TTL cache, candle-to-DataFrame conversion (#11)
+  - `candles_to_dataframe()` — converts OKX `Candle` objects to pandas DataFrames (#11)
 - **Phase 2: Risk Engine** — Budget management, position sizing, and protection plugins
   - `BudgetManager` with weekly/monthly budget tracking, loss/gain limits, SQLite persistence (#4)
   - `PositionSizer` with risk-based per-trade sizing, confidence scaling, budget caps (#5)
