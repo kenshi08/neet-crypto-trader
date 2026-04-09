@@ -1,0 +1,33 @@
+# Secrets
+.env
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Data (generated at runtime)
+*.sqlite
+*.sqlite-journal
+data/
+logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-compose.override.yml
