@@ -1,0 +1,23 @@
+[trading]
+pairs = ["BTC-USDT", "ETH-USDT", "SOL-USDT"]
+strategy = "momentum"
+timeframe = "15m"
+max_open_positions = 3
+poll_interval_seconds = 10
+
+[budget]
+period = "weekly"               # "weekly" or "monthly"
+amount_usdt = 500               # Capital to deploy per period
+max_loss_pct = 5.0              # Stop trading at -5% of budget
+max_gain_pct = 15.0             # Take profits at +15% of budget
+max_position_pct = 20.0         # Max 20% of budget per single trade
+daily_loss_limit_usdt = 100     # Hard stop for the day
+
+[risk]
+stop_loss_pct = 3.0             # Per-trade stop-loss
+take_profit_pct = 5.0           # Per-trade take-profit
+time_limit_seconds = 3600       # Close position after 1 hour if no SL/TP hit
+trailing_stop = false
+trailing_stop_activation_pct = 2.0
+trailing_stop_delta_pct = 1.0
+min_signal_confidence = 0.6     # Minimum strategy confidence to enter a trade

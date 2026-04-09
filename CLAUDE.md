@@ -6,9 +6,9 @@ A crypto trading agent for OKX that automates short-term speculative trading wit
 
 ## Tech Stack
 
-- **Python 3.12+**
+- **Python 3.11+**
 - **python-okx** — Official OKX SDK (REST + WebSocket)
-- **pandas + pandas-ta** — OHLCV data + 150+ technical indicators
+- **pandas + ta** — OHLCV data + technical indicators (ta library; pandas-ta requires 3.12+)
 - **Pydantic v2 + pydantic-settings** — Config validation, hot-reloadable fields
 - **aiosqlite** — SQLite persistence for budget tracking, trade history
 - **structlog** — Structured JSON logging

@@ -1,0 +1,165 @@
+"""Configuration loading and validation via Pydantic."""
+
+from __future__ import annotations
+
+from decimal import Decimal
+from pathlib import Path
+from typing import Literal
+
+import structlog
+from pydantic import BaseModel, Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+log = structlog.get_logger()
+
+# ---------------------------------------------------------------------------
+# Default paths
+# ---------------------------------------------------------------------------
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+DEFAULT_CONFIG_PATH = PROJECT_ROOT / 'config' / 'default.toml'
+
+
+# ---------------------------------------------------------------------------
+# Credentials (from .env only — never in TOML)
+# ---------------------------------------------------------------------------
+class OKXCredentials(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix='OKX_')
+
+    api_key: str = ''
+    api_secret: str = ''
+    passphrase: str = ''
+    demo_mode: bool = True
+
+    @property
+    def flag(self) -> str:
+        """OKX API flag: '1' for demo, '0' for live."""
+        return '1' if self.demo_mode else '0'
+
+
+# ---------------------------------------------------------------------------
+# Trading configuration
+# ---------------------------------------------------------------------------
+class TradingConfig(BaseModel):
+    pairs: list[str] = Field(default_factory=lambda: ['BTC-USDT', 'ETH-USDT', 'SOL-USDT'])
+    strategy: str = 'momentum'
+    timeframe: str = '15m'
+    max_open_positions: int = 3
+    poll_interval_seconds: int = 10
+
+    @field_validator('pairs', mode='before')
+    @classmethod
+    def _validate_pairs(cls, v: list[str]) -> list[str]:
+        for pair in v:
+            if '-' not in pair:
+                msg = f"Invalid pair format '{pair}' — expected 'BASE-QUOTE' (e.g. 'BTC-USDT')"
+                raise ValueError(msg)
+        return v
+
+    @field_validator('timeframe')
+    @classmethod
+    def _validate_timeframe(cls, v: str) -> str:
+        valid = {
+            '1m', '3m', '5m', '15m', '30m',
+            '1H', '2H', '4H', '6H', '12H',
+            '1D', '1W', '1M',
+        }
+        if v not in valid:
+            msg = f"Invalid timeframe '{v}' — must be one of {sorted(valid)}"
+            raise ValueError(msg)
+        return v
+
+
+# ---------------------------------------------------------------------------
+# Budget configuration
+# ---------------------------------------------------------------------------
+class BudgetConfig(BaseModel):
+    period: Literal['weekly', 'monthly'] = 'weekly'
+    amount_usdt: Decimal = Decimal('500')
+    max_loss_pct: Decimal = Decimal('5.0')
+    max_gain_pct: Decimal = Decimal('15.0')
+    max_position_pct: Decimal = Decimal('20.0')
+    daily_loss_limit_usdt: Decimal = Decimal('100')
+
+    @field_validator(
+        'amount_usdt',
+        'max_loss_pct',
+        'max_gain_pct',
+        'max_position_pct',
+        'daily_loss_limit_usdt',
+        mode='before',
+    )
+    @classmethod
+    def _coerce_to_decimal(cls, v: object) -> Decimal:
+        return Decimal(str(v))
+
+
+# ---------------------------------------------------------------------------
+# Risk configuration
+# ---------------------------------------------------------------------------
+class RiskConfig(BaseModel):
+    stop_loss_pct: Decimal = Decimal('3.0')
+    take_profit_pct: Decimal = Decimal('5.0')
+    time_limit_seconds: int = 3600
+    trailing_stop: bool = False
+    trailing_stop_activation_pct: Decimal = Decimal('2.0')
+    trailing_stop_delta_pct: Decimal = Decimal('1.0')
+    min_signal_confidence: float = 0.6
+
+    @field_validator(
+        'stop_loss_pct',
+        'take_profit_pct',
+        'trailing_stop_activation_pct',
+        'trailing_stop_delta_pct',
+        mode='before',
+    )
+    @classmethod
+    def _coerce_to_decimal(cls, v: object) -> Decimal:
+        return Decimal(str(v))
+
+
+# ---------------------------------------------------------------------------
+# Top-level application config
+# ---------------------------------------------------------------------------
+class AppConfig(BaseModel):
+    okx: OKXCredentials = Field(default_factory=OKXCredentials)
+    trading: TradingConfig = Field(default_factory=TradingConfig)
+    budget: BudgetConfig = Field(default_factory=BudgetConfig)
+    risk: RiskConfig = Field(default_factory=RiskConfig)
+
+
+def load_config(config_path: Path | None = None) -> AppConfig:
+    """Load configuration from TOML file + environment variables.
+
+    Credentials come from environment / .env file via OKXCredentials.
+    Trading, budget, and risk settings come from the TOML config file.
+    """
+    path = config_path or DEFAULT_CONFIG_PATH
+
+    toml_data: dict = {}
+    if path.exists():
+        import tomllib  # type: ignore[no-redef]
+
+        with open(path, 'rb') as f:
+            toml_data = tomllib.load(f)
+        log.info('config_loaded', path=str(path))
+    else:
+        log.warning('config_file_not_found', path=str(path), using='defaults')
+
+    okx = OKXCredentials()
+
+    trading = TradingConfig(**toml_data.get('trading', {}))
+    budget = BudgetConfig(**toml_data.get('budget', {}))
+    risk = RiskConfig(**toml_data.get('risk', {}))
+
+    config = AppConfig(okx=okx, trading=trading, budget=budget, risk=risk)
+
+    log.info(
+        'config_summary',
+        demo_mode=config.okx.demo_mode,
+        pairs=config.trading.pairs,
+        budget_period=config.budget.period,
+        budget_amount=str(config.budget.amount_usdt),
+        has_api_key=bool(config.okx.api_key),
+    )
+
+    return config
