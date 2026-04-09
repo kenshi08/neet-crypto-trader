@@ -8,12 +8,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from nct.config import OKXCredentials
+from nct.exceptions import AuthenticationError, ExchangeError, OrderError, RateLimitError
 from nct.exchange.client import (
-    AuthenticationError,
-    ExchangeError,
     OKXClient,
-    OrderError,
-    RateLimitError,
     retrier,
 )
 from nct.exchange.models import OrderRequest, OrderType, Side, TdMode

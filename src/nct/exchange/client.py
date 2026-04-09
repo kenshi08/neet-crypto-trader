@@ -12,6 +12,12 @@ import structlog
 from aiolimiter import AsyncLimiter
 
 from nct.config import OKXCredentials
+from nct.exceptions import (
+    AuthenticationError,
+    ExchangeError,
+    OrderError,
+    RateLimitError,
+)
 from nct.exchange.models import (
     AccountBalance,
     Candle,
@@ -29,30 +35,6 @@ from nct.exchange.models import (
 )
 
 log = structlog.get_logger()
-
-# ---------------------------------------------------------------------------
-# Exceptions
-# ---------------------------------------------------------------------------
-
-
-class NCTError(Exception):
-    """Base exception for neet-crypto-trader."""
-
-
-class ExchangeError(NCTError):
-    """General exchange communication error."""
-
-
-class RateLimitError(ExchangeError):
-    """OKX rate limit exceeded (HTTP 429 or sCode indicates throttling)."""
-
-
-class AuthenticationError(ExchangeError):
-    """Invalid API credentials or signature."""
-
-
-class OrderError(ExchangeError):
-    """Order rejected by exchange."""
 
 
 # ---------------------------------------------------------------------------

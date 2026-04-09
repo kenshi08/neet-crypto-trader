@@ -464,6 +464,50 @@ NCTError                        # Base for all project exceptions
 - Inline comments: explain **why**, not **what** — the code shows what
 - TODO format: `# TODO(username): description — #issue-number`
 
+### README.md
+
+The `README.md` is the public face of the project. Keep it updated when:
+- A new major feature is added (new phase completed)
+- Setup instructions change (new dependency, config change)
+- Project structure changes (new module or directory)
+- Deployment instructions change
+
+Sections to maintain: Quick Start, Configuration Reference, Project Structure, Development, Safety, Roadmap.
+
+### CHANGELOG.md
+
+Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. **Update on every commit to `develop` or `main`.**
+
+**When to update:**
+- Every phase completion — summarize what was added
+- Every bug fix — note what was fixed and the root cause
+- Every dependency change — note what changed and why
+- Every breaking config change — note the migration path
+
+**Categories:**
+- `Added` — new features, new modules, new config options
+- `Changed` — changes to existing functionality
+- `Fixed` — bug fixes
+- `Removed` — removed features or deprecated code
+- `Security` — vulnerability fixes
+
+**Workflow:**
+1. During development, add entries under `## [Unreleased]`
+2. When tagging a release, move unreleased entries to a versioned section `## [0.2.0] - YYYY-MM-DD`
+3. Every entry should be a single line, human-readable, linking to the issue when relevant
+
+**Example:**
+```markdown
+## [Unreleased]
+
+### Added
+- BudgetManager with weekly/monthly budget tracking and SQLite persistence (#4)
+- PositionSizer with risk-based per-trade sizing (#5)
+
+### Fixed
+- OKX rate limit handling now retries on HTTP 429 with quadratic backoff (#23)
+```
+
 ### Testing
 
 - **Framework**: pytest + pytest-asyncio
