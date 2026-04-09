@@ -1,85 +1,425 @@
-"""Entry point for the neet-crypto-trader agent."""
+"""Entry point and TradingAgent orchestrator — wires all components together."""
 
 from __future__ import annotations
 
 import asyncio
+import signal
 import sys
+from enum import StrEnum
 
 import structlog
 from dotenv import load_dotenv
 
-from nct.config import load_config
+from nct.config import AppConfig, load_config
+from nct.db import Database, get_db_path
+from nct.exceptions import ExchangeError
 from nct.exchange.client import OKXClient
+from nct.exchange.market_feed import MarketFeed
+from nct.executor import OrderExecutor
+from nct.logging_setup import setup_logging
+from nct.portfolio.tracker import PortfolioTracker
+from nct.risk.budget_manager import BudgetManager
+from nct.risk.position_sizer import PositionSizer
+from nct.risk.protections import (
+    CooldownPeriod,
+    MaxDrawdown,
+    ProtectionManager,
+    StoplossGuard,
+)
+from nct.risk.risk_manager import RiskManager
+from nct.strategy.base import Signal
+from nct.strategy.data_provider import DataProvider
+from nct.strategy.momentum import MomentumStrategy
+
+log = structlog.get_logger()
 
 
-def _setup_logging() -> None:
-    structlog.configure(
-        processors=[
-            structlog.contextvars.merge_contextvars,
-            structlog.processors.add_log_level,
-            structlog.processors.TimeStamper(fmt='iso'),
-            structlog.dev.ConsoleRenderer(),
-        ],
-        wrapper_class=structlog.make_filtering_bound_logger(0),
-        context_class=dict,
-        logger_factory=structlog.PrintLoggerFactory(),
-    )
+class AgentState(StrEnum):
+    STARTING = 'starting'
+    RUNNING = 'running'
+    PAUSED = 'paused'
+    STOPPING = 'stopping'
+    STOPPED = 'stopped'
 
 
-async def async_main() -> None:
-    log = structlog.get_logger()
+class TradingAgent:
+    """Main orchestrator that ties all components together.
 
-    config = load_config()
+    Lifecycle:
+    1. initialize() — connect DB, validate OKX, load state
+    2. run() — main trading loop
+    3. shutdown() — graceful stop, cancel orders, persist state
+    """
 
-    client = OKXClient(config.okx)
+    def __init__(self, config: AppConfig) -> None:
+        self._config = config
+        self._state = AgentState.STARTING
 
-    # Validate connection
-    if config.okx.api_key:
-        connected = await client.validate_connection()
-        if not connected:
-            log.error('startup_failed', reason='Could not connect to OKX')
-            sys.exit(1)
-    else:
-        log.warning('no_api_key', msg='Running without API key — dry-run only')
+        # Components (initialized in initialize())
+        self._client: OKXClient | None = None
+        self._db: Database | None = None
+        self._market_feed: MarketFeed | None = None
+        self._data_provider: DataProvider | None = None
+        self._budget_manager: BudgetManager | None = None
+        self._position_sizer: PositionSizer | None = None
+        self._protection_manager: ProtectionManager | None = None
+        self._risk_manager: RiskManager | None = None
+        self._portfolio: PortfolioTracker | None = None
+        self._executor: OrderExecutor | None = None
+        self._strategy: MomentumStrategy | None = None
 
-    # Fetch sample market data to verify everything works
-    for pair in config.trading.pairs:
+    async def initialize(self) -> bool:
+        """Initialize all components. Returns True if successful."""
+        log.info('agent_initializing', demo_mode=self._config.okx.demo_mode)
+
+        # 1. Exchange client
+        self._client = OKXClient(self._config.okx)
+
+        # 2. Validate connection (if API key provided)
+        if self._config.okx.api_key:
+            connected = await self._client.validate_connection()
+            if not connected:
+                log.error('startup_failed', reason='Could not connect to OKX')
+                return False
+        else:
+            log.warning('no_api_key', msg='Running without API key — dry-run only')
+
+        # 3. Database
+        db_path = get_db_path(is_dry_run=self._config.okx.demo_mode)
+        self._db = Database(db_path)
+        await self._db.connect()
+
+        # 4. Budget manager
+        self._budget_manager = BudgetManager(self._config.budget, self._db)
+        await self._budget_manager.initialize()
+
+        # 5. Position sizer
+        self._position_sizer = PositionSizer(
+            self._config.budget, self._config.risk,
+        )
+
+        # 6. Protection plugins
+        self._protection_manager = ProtectionManager([
+            StoplossGuard(
+                trade_limit=4,
+                lookback_seconds=3600,
+                stop_duration_seconds=3600,
+            ),
+            MaxDrawdown(
+                max_drawdown_usdt=self._config.budget.daily_loss_limit_usdt,
+            ),
+            CooldownPeriod(cooldown_seconds=300),
+        ])
+
+        # 7. Risk manager
+        self._risk_manager = RiskManager(
+            budget_manager=self._budget_manager,
+            position_sizer=self._position_sizer,
+            protection_manager=self._protection_manager,
+            risk_config=self._config.risk,
+            trading_config=self._config.trading,
+        )
+
+        # 8. Portfolio tracker
+        self._portfolio = PortfolioTracker(self._client, self._db)
+        await self._portfolio.initialize()
+
+        # 9. Order executor
+        self._executor = OrderExecutor(
+            client=self._client,
+            portfolio=self._portfolio,
+            budget_manager=self._budget_manager,
+            protection_manager=self._protection_manager,
+        )
+
+        # 10. Strategy
+        self._strategy = MomentumStrategy()
+
+        # 11. Data provider
+        self._data_provider = DataProvider(
+            self._client, cache_ttl_seconds=self._config.trading.poll_interval_seconds,
+        )
+
+        # 12. Market feed (WebSocket)
+        self._market_feed = MarketFeed(
+            self._config.trading.pairs,
+            demo_mode=self._config.okx.demo_mode,
+        )
+
+        self._state = AgentState.RUNNING
+        log.info(
+            'agent_initialized',
+            pairs=self._config.trading.pairs,
+            strategy=self._strategy.name,
+            budget=str(self._config.budget.amount_usdt),
+            period=self._config.budget.period,
+        )
+        return True
+
+    async def run(self) -> None:
+        """Main trading loop. Runs until shutdown is requested."""
+        assert self._state == AgentState.RUNNING
+
+        log.info('agent_running', poll_interval=self._config.trading.poll_interval_seconds)
+
+        # Start WebSocket feed in background
         try:
-            ticker = await client.get_ticker(pair)
-            log.info(
-                'ticker',
-                pair=ticker.inst_id,
-                last=str(ticker.last),
-                bid=str(ticker.bid),
-                ask=str(ticker.ask),
-                spread=f'{ticker.spread:.6f}',
-            )
-        except Exception as e:
-            log.error('ticker_fetch_failed', pair=pair, error=str(e))
+            await self._market_feed.start()
+        except Exception:
+            log.warning('ws_feed_start_failed', msg='Falling back to REST polling')
 
-    # Fetch candles for the first pair
-    if config.trading.pairs:
-        pair = config.trading.pairs[0]
         try:
-            candles = await client.get_candlesticks(
-                pair, bar=config.trading.timeframe, limit=10
-            )
-            log.info(
-                'candles_fetched',
-                pair=pair,
-                timeframe=config.trading.timeframe,
-                count=len(candles),
-                latest_close=str(candles[-1].close) if candles else 'N/A',
-            )
-        except Exception as e:
-            log.error('candle_fetch_failed', pair=pair, error=str(e))
+            while self._state == AgentState.RUNNING:
+                await self._trading_iteration()
+                await asyncio.sleep(self._config.trading.poll_interval_seconds)
+        except asyncio.CancelledError:
+            log.info('agent_loop_cancelled')
+        finally:
+            await self.shutdown()
 
-    log.info('phase1_complete', msg='Foundation is working. Ready for Phase 2.')
+    async def _trading_iteration(self) -> None:
+        """Single iteration of the trading loop."""
+        # Check for budget period reset
+        await self._budget_manager.check_period_reset()
+
+        # Check if any limits are hit
+        if self._budget_manager.is_daily_loss_limit_hit():
+            log.warning('daily_loss_limit_active', pnl=str(self._budget_manager.daily_pnl))
+            return
+        if self._budget_manager.is_period_loss_limit_hit():
+            log.warning('period_loss_limit_active', pnl=str(self._budget_manager.realized_pnl))
+            return
+        if self._budget_manager.is_period_gain_target_hit():
+            log.info('period_gain_target_active', pnl=str(self._budget_manager.realized_pnl))
+            return
+
+        # Check time-limited positions
+        current_prices = await self._get_current_prices()
+        if current_prices:
+            await self._executor.check_and_close_expired(
+                time_limit_seconds=self._config.risk.time_limit_seconds,
+                current_prices=current_prices,
+            )
+
+        # Fetch candle data for all pairs
+        dataframes = await self._data_provider.get_dataframes(
+            self._config.trading.pairs,
+            timeframe=self._config.trading.timeframe,
+            limit=max(100, self._strategy.required_candle_count + 10),
+        )
+
+        # Evaluate strategy for each pair
+        for pair, df in dataframes.items():
+            if self._state != AgentState.RUNNING:
+                break
+
+            # Skip if we already have a position in this pair
+            if self._portfolio.has_open_trade(pair):
+                continue
+
+            # Run strategy
+            result = self._strategy.evaluate(df, {'pair': pair})
+
+            if result.signal == Signal.HOLD:
+                continue
+
+            if result.signal == Signal.BUY:
+                await self._try_open_trade(pair, result, current_prices)
+
+        # Log periodic status
+        log.info(
+            'iteration_complete',
+            open_positions=self._portfolio.open_trade_count,
+            budget_deployed=str(self._budget_manager.capital_deployed),
+            budget_remaining=str(self._budget_manager.budget_remaining),
+            daily_pnl=str(self._budget_manager.daily_pnl),
+            period_pnl=str(self._budget_manager.realized_pnl),
+        )
+
+    async def _try_open_trade(self, pair: str, result, current_prices: dict) -> None:
+        """Attempt to open a trade after strategy signals BUY."""
+        from decimal import Decimal
+
+        price = current_prices.get(pair)
+        if not price:
+            log.warning('no_price_for_trade', pair=pair)
+            return
+
+        # Get available balance
+        try:
+            balances = await self._client.get_balance('USDT')
+            available = balances[0].available if balances else Decimal(0)
+        except ExchangeError:
+            log.exception('balance_fetch_failed')
+            return
+
+        # Risk check
+        decision = self._risk_manager.evaluate_trade(
+            inst_id=pair,
+            side='buy',
+            current_price=price,
+            available_balance=available,
+            signal_confidence=result.confidence,
+            open_position_count=self._portfolio.open_trade_count,
+        )
+
+        if not decision.approved:
+            return
+
+        # Execute
+        await self._executor.execute_trade(
+            inst_id=pair,
+            decision=decision,
+            strategy_name=self._strategy.name,
+            signal_confidence=result.confidence,
+        )
+
+    async def _get_current_prices(self) -> dict:
+        """Get current prices for all configured pairs."""
+        from decimal import Decimal
+
+        prices: dict[str, Decimal] = {}
+
+        # Try WebSocket cache first
+        if self._market_feed:
+            for pair in self._config.trading.pairs:
+                ticker = self._market_feed.get_latest_ticker(pair)
+                if ticker:
+                    prices[pair] = ticker.last
+
+        # Fall back to REST for any missing prices
+        missing = [p for p in self._config.trading.pairs if p not in prices]
+        for pair in missing:
+            try:
+                ticker = await self._client.get_ticker(pair)
+                prices[pair] = ticker.last
+            except ExchangeError:
+                log.warning('ticker_fetch_failed', pair=pair)
+
+        return prices
+
+    async def shutdown(self) -> None:
+        """Graceful shutdown: stop feed, cancel orders, persist state, close DB."""
+        if self._state == AgentState.STOPPED:
+            return
+
+        self._state = AgentState.STOPPING
+        log.info('agent_shutting_down')
+
+        # 1. Stop market feed
+        if self._market_feed:
+            try:
+                await self._market_feed.stop()
+            except Exception:
+                log.exception('market_feed_stop_error')
+
+        # 2. Cancel all open (unfilled) orders
+        if self._client:
+            try:
+                cancelled = await self._client.cancel_all_orders()
+                if cancelled:
+                    log.info('orders_cancelled_on_shutdown', count=cancelled)
+            except Exception:
+                log.exception('order_cancel_error_on_shutdown')
+
+        # 3. Log final state
+        if self._portfolio and self._budget_manager:
+            log.info(
+                'shutdown_state',
+                open_positions=self._portfolio.open_trade_count,
+                open_pairs=list(self._portfolio.open_trades.keys()),
+                period_pnl=str(self._budget_manager.realized_pnl),
+                daily_pnl=str(self._budget_manager.daily_pnl),
+                capital_deployed=str(self._budget_manager.capital_deployed),
+            )
+
+        # 4. Close database (persists all state)
+        if self._db:
+            try:
+                await self._db.close()
+            except Exception:
+                log.exception('db_close_error')
+
+        self._state = AgentState.STOPPED
+        log.info('agent_stopped')
+
+    async def kill_switch(self) -> None:
+        """Emergency stop: cancel all orders, close all positions, stop agent."""
+        log.critical('kill_switch_activated')
+
+        if self._client:
+            try:
+                await self._client.cancel_all_orders()
+            except Exception:
+                log.exception('kill_switch_cancel_error')
+
+        # Close all open positions at market
+        if self._portfolio and self._executor:
+            current_prices = await self._get_current_prices()
+            for pair in list(self._portfolio.open_trades.keys()):
+                price = current_prices.get(pair)
+                if price:
+                    try:
+                        await self._executor.close_trade(
+                            pair,
+                            current_price=price,
+                            reason='kill_switch',
+                            was_stop_loss=True,
+                        )
+                    except Exception:
+                        log.exception('kill_switch_close_error', pair=pair)
+
+        await self.shutdown()
+
+    @property
+    def state(self) -> AgentState:
+        return self._state
+
+
+# ---------------------------------------------------------------------------
+# Signal handling
+# ---------------------------------------------------------------------------
+
+
+def _install_signal_handlers(agent: TradingAgent, loop: asyncio.AbstractEventLoop) -> None:
+    """Install SIGINT/SIGTERM handlers for graceful shutdown."""
+
+    def _handle_signal(sig: signal.Signals) -> None:
+        log.info('signal_received', signal=sig.name)
+        loop.create_task(agent.shutdown())
+
+    import contextlib
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        with contextlib.suppress(NotImplementedError):
+            loop.add_signal_handler(sig, _handle_signal, sig)
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
+
+
+async def async_main(config: AppConfig | None = None) -> None:
+    """Main async entry point."""
+    config = config or load_config()
+    agent = TradingAgent(config)
+
+    loop = asyncio.get_running_loop()
+    _install_signal_handlers(agent, loop)
+
+    success = await agent.initialize()
+    if not success:
+        log.error('agent_init_failed')
+        sys.exit(1)
+
+    await agent.run()
 
 
 def cli_entry() -> None:
+    """CLI entry point — called by `nct` command."""
     load_dotenv()
-    _setup_logging()
+    setup_logging()
     asyncio.run(async_main())
 
 

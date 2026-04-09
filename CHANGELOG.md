@@ -8,6 +8,13 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Phase 5: Main Loop** — TradingAgent orchestrator, graceful shutdown, structured logging
+  - `TradingAgent` orchestrator wiring all components into autonomous trading loop (#15)
+  - Graceful shutdown on SIGINT/SIGTERM — cancels orders, persists state, closes DB (#16)
+  - Kill switch — emergency close all positions at market (#16)
+  - `AgentState` state machine: STARTING → RUNNING → STOPPING → STOPPED
+  - Structured logging with `agent.log`, `trades.log`, `errors.log` + rotation (#17)
+  - Trading iteration: budget check → time-limit expiry → fetch candles → strategy → risk → execute
 - **Phase 4: Execution** — Order executor, portfolio tracker, and WebSocket market feed
   - `OrderExecutor` — places orders with triple barrier (SL + TP + time limit) (#12)
   - `PortfolioTracker` — tracks open trades, P&L, persists to SQLite, detects orphans on startup (#13)
