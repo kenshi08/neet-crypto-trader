@@ -41,36 +41,44 @@ def setup_logging(*, log_dir: str = 'logs', debug: bool = False) -> None:
     console.setLevel(level)
     root.addHandler(console)
 
-    # Agent log — all INFO+
-    agent_handler = RotatingFileHandler(
-        log_path / 'agent.log',
-        maxBytes=10_000_000,  # 10 MB
-        backupCount=7,
-        encoding='utf-8',
-    )
-    agent_handler.setLevel(logging.INFO)
-    root.addHandler(agent_handler)
+    # File handlers — gracefully skip if directory isn't writable
+    try:
+        # Agent log — all INFO+
+        agent_handler = RotatingFileHandler(
+            log_path / 'agent.log',
+            maxBytes=10_000_000,  # 10 MB
+            backupCount=7,
+            encoding='utf-8',
+        )
+        agent_handler.setLevel(logging.INFO)
+        root.addHandler(agent_handler)
 
-    # Error log — WARNING+
-    error_handler = RotatingFileHandler(
-        log_path / 'errors.log',
-        maxBytes=10_000_000,
-        backupCount=7,
-        encoding='utf-8',
-    )
-    error_handler.setLevel(logging.WARNING)
-    root.addHandler(error_handler)
+        # Error log — WARNING+
+        error_handler = RotatingFileHandler(
+            log_path / 'errors.log',
+            maxBytes=10_000_000,
+            backupCount=7,
+            encoding='utf-8',
+        )
+        error_handler.setLevel(logging.WARNING)
+        root.addHandler(error_handler)
 
-    # Trade log — INFO, filtered to trade events only
-    trade_handler = RotatingFileHandler(
-        log_path / 'trades.log',
-        maxBytes=10_000_000,
-        backupCount=7,
-        encoding='utf-8',
-    )
-    trade_handler.setLevel(logging.INFO)
-    trade_handler.addFilter(_TradeEventFilter())
-    root.addHandler(trade_handler)
+        # Trade log — INFO, filtered to trade events only
+        trade_handler = RotatingFileHandler(
+            log_path / 'trades.log',
+            maxBytes=10_000_000,
+            backupCount=7,
+            encoding='utf-8',
+        )
+        trade_handler.setLevel(logging.INFO)
+        trade_handler.addFilter(_TradeEventFilter())
+        root.addHandler(trade_handler)
+    except PermissionError:
+        print(
+            f'WARNING: Cannot write to {log_dir}/ — logging to console only. '
+            f'Fix with: chown -R 1000:1000 {log_dir}/',
+            file=sys.stderr,
+        )
 
     # -- Structlog configuration ----------------------------------------
 
