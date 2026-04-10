@@ -78,17 +78,30 @@ class TestAgentInitialize:
 
     @patch('nct.main.Database')
     @patch('nct.main.OKXClient')
-    async def test_fails_on_bad_credentials(
+    async def test_continues_on_failed_validation(
         self, mock_client_cls, mock_db_cls, tmp_path: Path,
     ):
+        """Bot should start even if OKX is temporarily unreachable."""
         mock_client = MagicMock()
         mock_client.validate_connection = AsyncMock(return_value=False)
+        mock_client.is_demo = True
         mock_client_cls.return_value = mock_client
+
+        mock_db = MagicMock()
+        mock_db.connect = AsyncMock()
+        mock_db.get_active_budget_period = AsyncMock(return_value=None)
+        mock_db.create_budget_period = AsyncMock(return_value=1)
+        mock_db.get_daily_stats = AsyncMock(return_value=None)
+        mock_db.get_open_trades = AsyncMock(return_value=[])
+        mock_db.upsert_daily_stats = AsyncMock()
+        mock_db_cls.return_value = mock_db
 
         agent = TradingAgent(_test_config(tmp_path))
         success = await agent.initialize()
 
-        assert success is False
+        # Should still start — will retry connection in the trading loop
+        assert success is True
+        assert agent.state == AgentState.RUNNING
 
 
 class TestAgentShutdown:

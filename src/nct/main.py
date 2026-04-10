@@ -79,8 +79,10 @@ class TradingAgent:
         if self._config.okx.api_key:
             connected = await self._client.validate_connection()
             if not connected:
-                log.error('startup_failed', reason='Could not connect to OKX')
-                return False
+                log.warning(
+                    'startup_no_connection',
+                    msg='Could not validate OKX connection — will retry in trading loop',
+                )
         else:
             log.warning('no_api_key', msg='Running without API key — dry-run only')
 

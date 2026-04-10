@@ -158,12 +158,18 @@ class OKXClient:
         """Run a synchronous OKX SDK call in a thread to avoid blocking."""
         return await asyncio.to_thread(func, *args, **kwargs)
 
-    def _check_response(self, result: dict, *, context: str = '') -> list[dict]:
+    def _check_response(self, result: dict | str, *, context: str = '') -> list[dict]:
         """Validate OKX API response and return data list.
 
         OKX returns {"code": "0", "data": [...]} on success.
         Non-zero code indicates an error.
         """
+        # Handle non-dict responses (e.g., HTML from 503 errors)
+        if not isinstance(result, dict):
+            raise ExchangeError(
+                f'OKX returned non-JSON response ({context}): {str(result)[:200]}'
+            )
+
         code = result.get('code', '-1')
         if code == '0':
             return result.get('data', [])
@@ -171,7 +177,7 @@ class OKXClient:
         msg = result.get('msg', 'Unknown error')
         error_msg = f'OKX API error ({context}): code={code}, msg={msg}'
 
-        if code in ('50001', '50002', '50004', '50005'):
+        if code in ('50001', '50002', '50004', '50005', '50119'):
             raise AuthenticationError(error_msg)
         if code in ('50011', '50013'):
             raise RateLimitError(error_msg)
@@ -426,7 +432,7 @@ class OKXClient:
     async def validate_connection(self) -> bool:
         """Verify API credentials and connectivity.
 
-        Call this at startup to fail fast on bad credentials.
+        Retries on transient errors (503, network). Fails fast on auth errors.
         """
         try:
             balances = await self.get_balance()
@@ -440,7 +446,12 @@ class OKXClient:
             log.error('connection_failed', reason='invalid credentials')
             return False
         except ExchangeError as e:
-            log.error('connection_failed', reason=str(e))
+            # Transient error (503, network) — @retrier already exhausted retries
+            log.error(
+                'connection_failed',
+                reason='exchange temporarily unavailable (may be maintenance)',
+                error=str(e),
+            )
             return False
 
     # ===================================================================
