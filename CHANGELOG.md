@@ -14,12 +14,17 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   - Docker deployment — multi-stage Dockerfile, docker-compose with Synology NAS support (#20)
   - `MeanReversionStrategy` — Bollinger Bands + volume confirmation for ranging markets (#21)
   - OKX regional base URL support (`OKX_BASE_URL`) for EEA (`my.okx.com`) and US (`app.okx.com`)
+  - TOML-configurable strategy parameters via `[strategy.momentum]` section (#27)
+  - `NCT_CONFIG` env var to select alternate config files without rebuilding
+  - `config/aggressive_test.toml` for demo account testing
 
 ### Fixed
-- Docker: permission error on logs/data directories when running as non-root user
-- Logging: graceful fallback to console-only when log directory isn't writable
-- Config: find `default.toml` correctly across Docker and dev environments
-- Exchange: OKX regional endpoint mismatch causing error 50119 (API key doesn't exist)
+- Docker: permission error on logs/data directories when running as non-root user (#24)
+- Logging: graceful fallback to console-only when log directory isn't writable (#24)
+- Config: find `default.toml` correctly across Docker and dev environments (#25)
+- Exchange: OKX regional endpoint mismatch causing error 50119 — API key doesn't exist (#26)
+- Exchange: bot crashes on OKX 503 and misclassifies error 50001 as auth failure (#28)
+- Exchange: bot now starts even if OKX is temporarily unreachable — retries in trading loop (#28)
 - **Phase 5: Main Loop** — TradingAgent orchestrator, graceful shutdown, structured logging
   - `TradingAgent` orchestrator wiring all components into autonomous trading loop (#15)
   - Graceful shutdown on SIGINT/SIGTERM — cancels orders, persists state, closes DB (#16)
