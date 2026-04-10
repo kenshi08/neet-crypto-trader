@@ -131,6 +131,20 @@ class RiskConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Telegram configuration (from .env only)
+# ---------------------------------------------------------------------------
+class TelegramConfig(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix='TELEGRAM_')
+
+    token: str = ''
+    chat_id: str = ''
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.token and self.chat_id)
+
+
+# ---------------------------------------------------------------------------
 # Top-level application config
 # ---------------------------------------------------------------------------
 class AppConfig(BaseModel):
@@ -138,6 +152,7 @@ class AppConfig(BaseModel):
     trading: TradingConfig = Field(default_factory=TradingConfig)
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
     risk: RiskConfig = Field(default_factory=RiskConfig)
+    telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     strategy_params: dict = Field(default_factory=dict)
 
 
@@ -160,6 +175,7 @@ def load_config(config_path: Path | None = None) -> AppConfig:
         log.warning('config_file_not_found', path=str(path), using='defaults')
 
     okx = OKXCredentials()
+    telegram = TelegramConfig()
 
     trading = TradingConfig(**toml_data.get('trading', {}))
     budget = BudgetConfig(**toml_data.get('budget', {}))
@@ -169,7 +185,7 @@ def load_config(config_path: Path | None = None) -> AppConfig:
 
     config = AppConfig(
         okx=okx, trading=trading, budget=budget, risk=risk,
-        strategy_params=strategy_params,
+        telegram=telegram, strategy_params=strategy_params,
     )
 
     log.info(

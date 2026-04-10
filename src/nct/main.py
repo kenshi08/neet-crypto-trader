@@ -17,6 +17,7 @@ from nct.exchange.client import OKXClient
 from nct.exchange.market_feed import MarketFeed
 from nct.executor import OrderExecutor
 from nct.logging_setup import setup_logging
+from nct.notifier import TelegramNotifier
 from nct.portfolio.tracker import PortfolioTracker
 from nct.risk.budget_manager import BudgetManager
 from nct.risk.position_sizer import PositionSizer
@@ -67,6 +68,7 @@ class TradingAgent:
         self._portfolio: PortfolioTracker | None = None
         self._executor: OrderExecutor | None = None
         self._strategy: MomentumStrategy | None = None
+        self._notifier: TelegramNotifier | None = None
 
     async def initialize(self) -> bool:
         """Initialize all components. Returns True if successful."""
@@ -148,6 +150,14 @@ class TradingAgent:
             demo_mode=self._config.okx.demo_mode,
         )
 
+        # 13. Telegram notifier (optional)
+        if self._config.telegram.enabled:
+            self._notifier = TelegramNotifier(
+                token=self._config.telegram.token,
+                chat_id=self._config.telegram.chat_id,
+            )
+            self._notifier.set_agent(self)
+
         self._state = AgentState.RUNNING
         log.info(
             'agent_initialized',
@@ -170,6 +180,15 @@ class TradingAgent:
         except Exception:
             log.warning('ws_feed_start_failed', msg='Falling back to REST polling')
 
+        # Start Telegram bot
+        if self._notifier and self._notifier.enabled:
+            try:
+                await self._notifier.start()
+                pairs = ', '.join(self._config.trading.pairs)
+                await self._notifier.send(f'Bot started. Watching: {pairs}')
+            except Exception:
+                log.exception('telegram_start_failed')
+
         try:
             while self._state == AgentState.RUNNING:
                 await self._trading_iteration()
@@ -187,12 +206,24 @@ class TradingAgent:
         # Check if any limits are hit
         if self._budget_manager.is_daily_loss_limit_hit():
             log.warning('daily_loss_limit_active', pnl=str(self._budget_manager.daily_pnl))
+            if self._notifier:
+                await self._notifier.notify_limit_hit(
+                    reason=f'Daily loss limit: {self._budget_manager.daily_pnl} USDT',
+                )
             return
         if self._budget_manager.is_period_loss_limit_hit():
             log.warning('period_loss_limit_active', pnl=str(self._budget_manager.realized_pnl))
+            if self._notifier:
+                await self._notifier.notify_limit_hit(
+                    reason=f'Period loss limit: {self._budget_manager.realized_pnl} USDT',
+                )
             return
         if self._budget_manager.is_period_gain_target_hit():
             log.info('period_gain_target_active', pnl=str(self._budget_manager.realized_pnl))
+            if self._notifier:
+                await self._notifier.notify_limit_hit(
+                    reason=f'Gain target reached: {self._budget_manager.realized_pnl} USDT',
+                )
             return
 
         # Check time-limited positions
@@ -269,12 +300,23 @@ class TradingAgent:
             return
 
         # Execute
-        await self._executor.execute_trade(
+        trade = await self._executor.execute_trade(
             inst_id=pair,
             decision=decision,
             strategy_name=self._strategy.name,
             signal_confidence=result.confidence,
         )
+
+        # Notify
+        if trade and self._notifier:
+            await self._notifier.notify_trade_opened(
+                inst_id=pair,
+                side='buy',
+                size=decision.size,
+                entry_price=trade.entry_price,
+                stop_loss=decision.stop_loss_price,
+                take_profit=decision.take_profit_price,
+            )
 
     async def _get_current_prices(self) -> dict:
         """Get current prices for all configured pairs."""
@@ -335,7 +377,21 @@ class TradingAgent:
                 capital_deployed=str(self._budget_manager.capital_deployed),
             )
 
-        # 4. Close database (persists all state)
+        # 4. Notify and stop Telegram
+        if self._notifier and self._notifier.enabled:
+            try:
+                await self._notifier.send(
+                    '*Bot stopped.*\n'
+                    f'Period P&L: `{self._budget_manager.realized_pnl} USDT`\n'
+                    f'Open positions: `{self._portfolio.open_trade_count}`'
+                    if self._budget_manager and self._portfolio
+                    else '*Bot stopped.*'
+                )
+                await self._notifier.stop()
+            except Exception:
+                log.exception('telegram_stop_error')
+
+        # 5. Close database (persists all state)
         if self._db:
             try:
                 await self._db.close()
