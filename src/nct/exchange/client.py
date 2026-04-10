@@ -138,9 +138,17 @@ class OKXClient:
         passphrase = self._credentials.passphrase
         flag = self._flag
 
-        self._market_api = MarketData.MarketAPI(key, secret, passphrase, False, flag=flag)
-        self._trade_api = Trade.TradeAPI(key, secret, passphrase, False, flag=flag)
-        self._account_api = Account.AccountAPI(key, secret, passphrase, False, flag=flag)
+        base_url = self._credentials.base_url
+
+        self._market_api = MarketData.MarketAPI(
+            key, secret, passphrase, False, flag=flag, domain=base_url,
+        )
+        self._trade_api = Trade.TradeAPI(
+            key, secret, passphrase, False, flag=flag, domain=base_url,
+        )
+        self._account_api = Account.AccountAPI(
+            key, secret, passphrase, False, flag=flag, domain=base_url,
+        )
 
         log.info('okx_sdk_initialized', flag=flag)
 

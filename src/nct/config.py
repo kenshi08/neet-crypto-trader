@@ -41,6 +41,7 @@ class OKXCredentials(BaseSettings):
     api_secret: str = ''
     passphrase: str = ''
     demo_mode: bool = True
+    base_url: str = 'https://www.okx.com'
 
     @property
     def flag(self) -> str:
