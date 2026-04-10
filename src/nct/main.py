@@ -282,9 +282,13 @@ class TradingAgent:
         try:
             balances = await self._client.get_balance('USDT')
             available = balances[0].available if balances else Decimal(0)
-        except ExchangeError:
-            log.exception('balance_fetch_failed')
-            return
+        except Exception:
+            # Fall back to budget remaining as simulated balance
+            available = self._budget_manager.budget_remaining
+            log.warning(
+                'balance_fetch_failed_using_budget',
+                simulated_balance=str(available),
+            )
 
         # Risk check
         decision = self._risk_manager.evaluate_trade(
