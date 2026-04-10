@@ -108,8 +108,13 @@ class TestCheckResponse:
         assert data == [{'instId': 'BTC-USDT'}]
 
     def test_auth_error(self):
-        result = {'code': '50001', 'msg': 'Invalid signature'}
+        result = {'code': '50119', 'msg': "API key doesn't exist"}
         with pytest.raises(AuthenticationError):
+            self.client._check_response(result)
+
+    def test_service_unavailable_is_exchange_error(self):
+        result = {'code': '50001', 'msg': 'Service temporarily unavailable'}
+        with pytest.raises(ExchangeError):
             self.client._check_response(result)
 
     def test_rate_limit_error(self):

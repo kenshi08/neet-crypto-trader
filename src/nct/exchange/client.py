@@ -177,8 +177,11 @@ class OKXClient:
         msg = result.get('msg', 'Unknown error')
         error_msg = f'OKX API error ({context}): code={code}, msg={msg}'
 
-        if code in ('50001', '50002', '50004', '50005', '50119'):
+        if code in ('50002', '50004', '50005', '50119'):
             raise AuthenticationError(error_msg)
+        if code in ('50001',):
+            # 50001 = "Service temporarily unavailable" — retryable, not auth
+            raise ExchangeError(error_msg)
         if code in ('50011', '50013'):
             raise RateLimitError(error_msg)
         if code in ('51000', '51001', '51002', '51003', '51004', '51008'):
