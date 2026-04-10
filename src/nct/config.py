@@ -15,8 +15,20 @@ log = structlog.get_logger()
 # ---------------------------------------------------------------------------
 # Default paths
 # ---------------------------------------------------------------------------
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-DEFAULT_CONFIG_PATH = PROJECT_ROOT / 'config' / 'default.toml'
+def _find_config_path() -> Path:
+    """Find the config file, checking common locations."""
+    candidates = [
+        Path('config/default.toml'),             # relative to cwd (Docker /app/)
+        Path('/app/config/default.toml'),         # Docker absolute path
+        Path(__file__).resolve().parent.parent.parent / 'config' / 'default.toml',  # dev
+    ]
+    for path in candidates:
+        if path.exists():
+            return path
+    return candidates[0]  # return first candidate even if not found
+
+
+DEFAULT_CONFIG_PATH = _find_config_path()
 
 
 # ---------------------------------------------------------------------------
