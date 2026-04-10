@@ -132,8 +132,8 @@ class TradingAgent:
             protection_manager=self._protection_manager,
         )
 
-        # 10. Strategy
-        self._strategy = MomentumStrategy()
+        # 10. Strategy (with config-driven parameters)
+        self._strategy = MomentumStrategy(**self._config.strategy_params)
 
         # 11. Data provider
         self._data_provider = DataProvider(
@@ -402,7 +402,13 @@ def _install_signal_handlers(agent: TradingAgent, loop: asyncio.AbstractEventLoo
 
 async def async_main(config: AppConfig | None = None) -> None:
     """Main async entry point."""
-    config = config or load_config()
+    if config is None:
+        import os
+        from pathlib import Path as _Path
+
+        config_path = os.environ.get('NCT_CONFIG')
+        config = load_config(_Path(config_path) if config_path else None)
+
     agent = TradingAgent(config)
 
     loop = asyncio.get_running_loop()

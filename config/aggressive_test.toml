@@ -1,0 +1,33 @@
+# Aggressive config for testing on demo account.
+# Triggers trades much more frequently than defaults.
+# DO NOT use this on a live account.
+
+[trading]
+pairs = ["BTC-USDT"]
+strategy = "momentum"
+timeframe = "1m"                # 1-minute candles for faster signals
+max_open_positions = 1
+poll_interval_seconds = 10
+
+[budget]
+period = "weekly"
+amount_usdt = 100               # Small test budget
+max_loss_pct = 10.0             # Allow more loss for testing
+max_gain_pct = 20.0
+max_position_pct = 50.0         # Allow larger positions
+daily_loss_limit_usdt = 50
+
+[risk]
+stop_loss_pct = 1.0             # Tight SL for quick exits
+take_profit_pct = 1.5           # Tight TP for quick exits
+time_limit_seconds = 300        # 5-minute time limit
+trailing_stop = false
+min_signal_confidence = 0.1     # Accept almost any signal
+
+[strategy.momentum]
+rsi_period = 7                  # Faster RSI (more responsive)
+rsi_oversold = 45.0             # Much wider — triggers often
+rsi_overbought = 55.0           # Much wider — triggers often
+macd_fast = 6                   # Faster MACD
+macd_slow = 13
+macd_signal = 5

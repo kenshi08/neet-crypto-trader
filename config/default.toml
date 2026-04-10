@@ -21,3 +21,11 @@ trailing_stop = false
 trailing_stop_activation_pct = 2.0
 trailing_stop_delta_pct = 1.0
 min_signal_confidence = 0.6     # Minimum strategy confidence to enter a trade
+
+[strategy.momentum]
+rsi_period = 14
+rsi_oversold = 30.0             # RSI below this = oversold (buy signal)
+rsi_overbought = 70.0           # RSI above this = overbought (sell signal)
+macd_fast = 12
+macd_slow = 26
+macd_signal = 9

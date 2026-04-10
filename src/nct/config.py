@@ -138,6 +138,7 @@ class AppConfig(BaseModel):
     trading: TradingConfig = Field(default_factory=TradingConfig)
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
     risk: RiskConfig = Field(default_factory=RiskConfig)
+    strategy_params: dict = Field(default_factory=dict)
 
 
 def load_config(config_path: Path | None = None) -> AppConfig:
@@ -164,7 +165,12 @@ def load_config(config_path: Path | None = None) -> AppConfig:
     budget = BudgetConfig(**toml_data.get('budget', {}))
     risk = RiskConfig(**toml_data.get('risk', {}))
 
-    config = AppConfig(okx=okx, trading=trading, budget=budget, risk=risk)
+    strategy_params = toml_data.get('strategy', {}).get(trading.strategy, {})
+
+    config = AppConfig(
+        okx=okx, trading=trading, budget=budget, risk=risk,
+        strategy_params=strategy_params,
+    )
 
     log.info(
         'config_summary',
