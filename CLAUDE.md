@@ -546,6 +546,12 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. **Updat
 - **Algo orders**: Use for server-side stop-loss/take-profit (survive bot crashes)
 - **7-day order history limit**: Need archive endpoint for older closed orders
 - **Broker ID**: Register for OKX broker program for higher rate limits (optional)
+- **Regional endpoints** (#26): OKX uses different base URLs by region. API keys from one domain don't work on another:
+  - Global: `https://www.okx.com`
+  - Europe (EEA): `https://my.okx.com`
+  - US: `https://app.okx.com`
+  - Set via `OKX_BASE_URL` env var. The python-okx SDK `domain` parameter passes this to all API calls.
+- **Demo API keys are separate from live keys**: Must be created while in "Demo Trading" mode on OKX website. Error `50119` usually means wrong domain or demo/live key mismatch.
 
 ## Implementation Phases
 
