@@ -14,7 +14,10 @@ COPY --from=builder /usr/local/bin/nct /usr/local/bin/nct
 COPY src/ src/
 COPY config/ config/
 
-RUN useradd --create-home --shell /bin/bash trader
+RUN useradd --create-home --shell /bin/bash trader \
+    && mkdir -p /app/logs /app/data \
+    && chown -R trader:trader /app/logs /app/data
+
 USER trader
 
 HEALTHCHECK --interval=60s --timeout=10s --retries=3 \
