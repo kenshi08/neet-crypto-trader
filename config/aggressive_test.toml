@@ -3,7 +3,8 @@
 # DO NOT use this on a live account.
 
 [trading]
-pairs = ["BTC-USDT"]
+# Use BTC-USD for Coinbase; BTC-USDT for OKX/Bybit
+pairs = ["BTC-USD"]
 strategy = "momentum"
 timeframe = "1m"                # 1-minute candles for faster signals
 max_open_positions = 1

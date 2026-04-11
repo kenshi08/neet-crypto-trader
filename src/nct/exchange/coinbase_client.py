@@ -113,9 +113,7 @@ class CoinbaseClient(IExchange):
         from coinbase.rest import RESTClient
 
         if self._credentials.api_key and self._credentials.api_secret:
-            # Normalize the private key: .env files store literal '\n' which
-            # must be converted to actual newlines for PEM parsing.
-            api_secret = self._credentials.api_secret.replace('\\n', '\n')
+            api_secret = self._normalize_private_key(self._credentials.api_secret)
             self._session = RESTClient(
                 api_key=self._credentials.api_key,
                 api_secret=api_secret,
@@ -125,6 +123,45 @@ class CoinbaseClient(IExchange):
             self._session = RESTClient()
 
         log.info('coinbase_sdk_initialized', demo_mode=self._demo_mode)
+
+    @staticmethod
+    def _normalize_private_key(raw: str) -> str:
+        """Normalize a PEM private key from various env var encodings.
+
+        Handles:
+        - Literal backslash-n sequences (from .env files)
+        - Surrounding quotes
+        - Missing newlines between BEGIN/END markers
+        """
+        key = raw.strip()
+
+        # Strip surrounding quotes if present
+        if (key.startswith('"') and key.endswith('"')) or (
+            key.startswith("'") and key.endswith("'")
+        ):
+            key = key[1:-1]
+
+        # Convert literal \n to actual newlines
+        key = key.replace('\\n', '\n')
+
+        # If the key is all on one line (no newlines but has BEGIN/END markers),
+        # insert newlines after the markers and before END
+        if '\n' not in key and 'BEGIN' in key and 'END' in key:
+            import re
+
+            # Find header/footer
+            match = re.match(
+                r'(-----BEGIN [A-Z ]+-----)(.*?)(-----END [A-Z ]+-----)',
+                key,
+            )
+            if match:
+                header, body, footer = match.groups()
+                body = body.strip()
+                # Split body into 64-char lines
+                body_lines = [body[i:i + 64] for i in range(0, len(body), 64)]
+                key = '\n'.join([header, *body_lines, footer, ''])
+
+        return key
 
     # -- Helpers --------------------------------------------------------
 
