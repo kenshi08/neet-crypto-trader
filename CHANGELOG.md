@@ -8,6 +8,13 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Multi-exchange support: Coinbase** — third exchange option, accessible from Singapore (#33, #34, #35)
+  - `CoinbaseClient` implementing `IExchange` via `coinbase-advanced-py` SDK
+  - `CoinbaseCredentials` config with `COINBASE_` env prefix (CDP API keys)
+  - Dry-run simulation for demo mode (Advanced Trade has no public sandbox)
+  - Stop-loss/take-profit via `stop_limit_order_gtc_*` with `stop_direction`
+  - Granularity mapping: `1m`/`15m`/`1H`/`1D` → `ONE_MINUTE`/`FIFTEEN_MINUTE`/`ONE_HOUR`/`ONE_DAY`
+  - 23 new tests (269 total) for CoinbaseClient and factory
 - **Multi-exchange support: Bybit** — Switch between OKX and Bybit via `EXCHANGE` env var
   - `IExchange` abstract interface in `src/nct/exchange/base.py` (#29)
   - `BybitClient` implementation using `pybit` SDK with V5 unified trading API (#30)

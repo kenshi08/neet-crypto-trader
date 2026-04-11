@@ -50,7 +50,15 @@ nct
 
 **`.env`** — Credentials (never committed to git):
 
-For Bybit (recommended):
+For Coinbase (recommended for Singapore):
+```
+EXCHANGE=coinbase
+COINBASE_API_KEY=organizations/xxx/apiKeys/yyy
+COINBASE_API_SECRET="-----BEGIN EC PRIVATE KEY-----\n...\n-----END EC PRIVATE KEY-----\n"
+COINBASE_DEMO_MODE=true
+```
+
+For Bybit (geo-blocked in some regions including Singapore):
 ```
 EXCHANGE=bybit
 BYBIT_API_KEY=your-key

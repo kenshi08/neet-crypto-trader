@@ -9,6 +9,7 @@ A crypto trading agent for OKX that automates short-term speculative trading wit
 - **Python 3.11+**
 - **python-okx** — Official OKX SDK (REST + WebSocket)
 - **pybit** — Official Bybit SDK (V5 unified trading API)
+- **coinbase-advanced-py** — Official Coinbase SDK (Advanced Trade API)
 - **pandas + ta** — OHLCV data + technical indicators (ta library; pandas-ta requires 3.12+)
 - **Pydantic v2 + pydantic-settings** — Config validation, hot-reloadable fields
 - **aiosqlite** — SQLite persistence for budget tracking, trade history
@@ -538,6 +539,20 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. **Updat
 - Audit new dependencies before adding: check maintenance status, security history, license
 
 ## Exchange-Specific Notes
+
+### Coinbase (recommended for Singapore)
+
+- **Availability**: Accessible from Singapore (Bybit and some others are geo-blocked).
+- **API**: Coinbase Advanced Trade API via `coinbase-advanced-py` SDK. Uses CDP (Coinbase Developer Platform) API keys.
+- **Sandbox**: Advanced Trade has **no public sandbox**. Our `demo_mode=True` simulates orders locally using the same dry-run pattern as OKXClient. Public market data always uses the live endpoint.
+- **API key format**: CDP keys are JSON-formatted. `COINBASE_API_KEY` is the `name` field (`organizations/xxx/apiKeys/yyy`) and `COINBASE_API_SECRET` is the PEM-formatted `privateKey` (including `-----BEGIN EC PRIVATE KEY-----` lines).
+- **Products**: Use dash-separated IDs like `BTC-USD`, `ETH-USD`, `BTC-USDC`. Note: Coinbase uses USD, not USDT.
+- **Granularity**: Uses enum strings: `ONE_MINUTE`, `FIFTEEN_MINUTE`, `ONE_HOUR`, `ONE_DAY`. Our `_to_coinbase_granularity()` maps from `1m`/`15m`/`1H`/`1D`.
+- **Stop orders**: Via `stop_limit_order_gtc_*` methods with `stop_direction` (`STOP_DIRECTION_STOP_UP` or `STOP_DIRECTION_STOP_DOWN`).
+- **Fees**: ~0.4% maker/taker on Advanced Trade (higher than OKX/Bybit's 0.1%).
+- **Rate limits**: ~15 req/s on both public and private endpoints.
+- **No positions API**: Spot only. `get_positions()` returns an empty list.
+- **Account type**: Simple per-currency account list via `get_accounts`.
 
 ### Bybit (recommended)
 
