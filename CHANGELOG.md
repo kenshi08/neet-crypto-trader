@@ -40,6 +40,15 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   CLI accepts `--slippage-pct` for explicit control.
 
 ### Added
+- **Backtest realism filters** — next layer of execution realism: min-notional
+  rejection, synthetic bid-ask spread with half-spread cost on market
+  entries/exits, `max_spread_pct` filter, seeded random order rejection
+  (stress-tests the retry path), and partial-fill approximation scaled by
+  size/candle-volume ratio. All filters default to a strict no-op. CLI flags:
+  `--min-notional`, `--spread-pct`, `--max-spread-pct`, `--rejection-rate`,
+  `--rng-seed`, `--partial-fill-impact`. Rejection counters appear in the
+  backtest report. Exchange presets unified into `_EXCHANGE_PRESETS` carrying
+  both fee and min-notional values. 12 new tests (314 total). (#42)
 - Strategy factory pattern with `create_strategy()` and `list_strategies()` (#37)
 - Backtest fee model with per-side fee configuration and exchange presets (#38)
 - Backtest slippage model with gap-through stop-loss semantics and
@@ -47,7 +56,7 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `src/nct/runtime_mode.py` — `RunningMode` enum, `detect_mode()`, and
   `describe()` with mode-specific log warnings and Telegram messages (#39)
 - 22 new tests covering fee model, runtime mode detection, and slippage
-  model including gap-through validation (302 total)
+  model including gap-through validation
 - `config/default.toml` now includes both `[strategy.momentum]` and
   `[strategy.mean_reversion]` sections with documented parameters
 - README documents how to switch strategies via config

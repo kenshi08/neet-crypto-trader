@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import random
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -77,6 +78,15 @@ class BacktestResult:
     sharpe_ratio: float
     fee_pct: float                # fee rate used for the simulation
     slippage_pct: float           # adverse slippage per market order
+    # Realism filters (#42) — all default to strict no-op
+    min_notional_usdt: float = 0.0
+    spread_pct: float = 0.0
+    max_spread_pct: float | None = None
+    rejection_rate: float = 0.0
+    partial_fill_impact: float = 0.0
+    rejected_min_notional: int = 0
+    rejected_max_spread: int = 0
+    rejected_random: int = 0
     trades: list[BacktestTrade] = field(default_factory=list)
 
 
@@ -89,6 +99,13 @@ def run_backtest(
     position_size_usdt: float = 100.0,
     fee_pct: float = 0.4,  # Coinbase Advanced Trade taker fee by default
     slippage_pct: float = 0.05,  # Realistic market-order slippage for liquid pairs
+    # Realism filters (#42) — defaults are strict no-ops
+    min_notional_usdt: float = 0.0,
+    spread_pct: float = 0.0,
+    max_spread_pct: float | None = None,
+    rejection_rate: float = 0.0,
+    rng_seed: int | None = None,
+    partial_fill_impact: float = 0.0,
 ) -> BacktestResult:
     """Run a backtest on historical OHLCV data.
 
@@ -106,6 +123,33 @@ def run_backtest(
             overnight gaps and flash crashes. Take-profits are treated as
             limit orders and fill at the exact TP price. Set to 0 for an
             idealized backtest.
+
+    Realism layers (#42) — all default to a strict no-op so existing callers
+    see unchanged behaviour:
+
+        min_notional_usdt: Minimum order notional in USDT. Entries where
+            ``position_size_usdt < min_notional_usdt`` are rejected and
+            counted in ``rejected_min_notional``. 0 disables the filter.
+            Typical values: Coinbase/OKX ~$1, Bybit ~$5, Binance ~$10.
+        spread_pct: Synthetic bid-ask spread as a percentage of price. Used
+            for two purposes: (1) a half-spread cost applied on market
+            entries AND market exits (not TP limits, not gap-through SL),
+            and (2) compared against ``max_spread_pct`` at signal time. Our
+            OHLCV candles do not carry bid/ask data, so this is a
+            user-supplied assumption — not measured from data.
+        max_spread_pct: When set, entries are skipped if
+            ``spread_pct > max_spread_pct`` (counted in
+            ``rejected_max_spread``). ``None`` disables the filter.
+        rejection_rate: Probability in [0, 1] that any given entry is
+            rejected to simulate API errors, insufficient balance, or
+            throttling. Rejected entries are counted in ``rejected_random``.
+            Reproducibility via ``rng_seed``.
+        rng_seed: Seed for the random rejection RNG. ``None`` = nondeterministic.
+            Tests should pass an explicit int.
+        partial_fill_impact: Extra adverse slippage proportional to
+            ``(size_base / candle_volume_base) * partial_fill_impact`` on
+            entry fills. Approximates walking the orderbook when order size
+            is material against candle volume. 0 disables.
     """
     strategy = MomentumStrategy()
 
@@ -123,6 +167,11 @@ def run_backtest(
             max_drawdown=0, win_rate=0, avg_win=0, avg_loss=0,
             profit_factor=0, sharpe_ratio=0,
             fee_pct=fee_pct, slippage_pct=slippage_pct,
+            min_notional_usdt=min_notional_usdt,
+            spread_pct=spread_pct,
+            max_spread_pct=max_spread_pct,
+            rejection_rate=rejection_rate,
+            partial_fill_impact=partial_fill_impact,
         )
 
     # Run strategy on full dataframe
@@ -132,6 +181,11 @@ def run_backtest(
 
     fee_rate = fee_pct / 100.0
     slip_rate = slippage_pct / 100.0
+    spread_cost = (spread_pct / 100.0) / 2.0  # half-spread per side on market orders
+    rng = random.Random(rng_seed)
+    rejected_min_notional = 0
+    rejected_max_spread = 0
+    rejected_random = 0
 
     def _finalize(trade: BacktestTrade, exit_idx: int, exit_price: float, reason: str) -> None:
         """Compute gross P&L, entry/exit fees, and net P&L on exit."""
@@ -161,8 +215,8 @@ def run_backtest(
                     # before the order can react.
                     fill = row['open']
                 else:
-                    # Normal trigger: fill at SL with adverse slippage past it
-                    fill = current_trade.stop_loss * (1 - slip_rate)
+                    # Normal trigger: fill at SL with adverse slippage + half-spread
+                    fill = current_trade.stop_loss * (1 - slip_rate - spread_cost)
                 _finalize(current_trade, i, fill, 'stop_loss')
                 trades.append(current_trade)
                 in_position = False
@@ -177,17 +231,46 @@ def run_backtest(
                 current_trade = None
                 continue
 
-            # Check exit signal (market-sell — adverse slippage)
+            # Check exit signal (market-sell — adverse slippage + half-spread)
             if row.get('exit_long', 0) == 1:
-                _finalize(current_trade, i, price * (1 - slip_rate), 'exit_signal')
+                _finalize(current_trade, i, price * (1 - slip_rate - spread_cost), 'exit_signal')
                 trades.append(current_trade)
                 in_position = False
                 current_trade = None
                 continue
 
         elif not in_position and row.get('enter_long', 0) == 1:
-            # Open position (market-buy — adverse slippage)
-            entry_price = price * (1 + slip_rate)
+            # Realism filters (#42) — applied in order, each short-circuits to next candle.
+
+            # 1. Minimum notional: exchanges reject orders below a per-pair minimum.
+            if min_notional_usdt > 0 and position_size_usdt < min_notional_usdt:
+                rejected_min_notional += 1
+                continue
+
+            # 2. Max spread: skip entries when the bid-ask spread is too wide
+            #    (real strategies blow up on illiquid pairs where the spread
+            #    eats the edge). spread_pct is user-supplied synthetic.
+            if max_spread_pct is not None and spread_pct > max_spread_pct:
+                rejected_max_spread += 1
+                continue
+
+            # 3. Random rejection: simulate insufficient balance, API errors,
+            #    throttling, etc. Seeded for reproducibility.
+            if rejection_rate > 0 and rng.random() < rejection_rate:
+                rejected_random += 1
+                continue
+
+            # 4. Partial-fill impact: extra adverse slippage proportional to
+            #    size/candle-volume ratio. Approximates walking the orderbook.
+            #    Volume in OHLCV is base-ccy.
+            extra_slip = 0.0
+            if partial_fill_impact > 0 and row['volume'] > 0:
+                size_base = position_size_usdt / price
+                volume_ratio = size_base / row['volume']
+                extra_slip = partial_fill_impact * volume_ratio
+
+            # Open position (market-buy — adverse slippage + half-spread + partial-fill)
+            entry_price = price * (1 + slip_rate + spread_cost + extra_slip)
             size = position_size_usdt / entry_price
             sl_price = entry_price * (1 - stop_loss_pct / 100)
             tp_price = entry_price * (1 + take_profit_pct / 100)
@@ -202,9 +285,9 @@ def run_backtest(
             )
             in_position = True
 
-    # Close any open position at the end (market-sell)
+    # Close any open position at the end (market-sell — adverse slippage + half-spread)
     if in_position and current_trade:
-        last_price = processed.iloc[-1]['close'] * (1 - slip_rate)
+        last_price = processed.iloc[-1]['close'] * (1 - slip_rate - spread_cost)
         _finalize(current_trade, len(processed) - 1, last_price, 'end_of_data')
         trades.append(current_trade)
 
@@ -215,6 +298,14 @@ def run_backtest(
         strategy_name=strategy_name,
         fee_pct=fee_pct,
         slippage_pct=slippage_pct,
+        min_notional_usdt=min_notional_usdt,
+        spread_pct=spread_pct,
+        max_spread_pct=max_spread_pct,
+        rejection_rate=rejection_rate,
+        partial_fill_impact=partial_fill_impact,
+        rejected_min_notional=rejected_min_notional,
+        rejected_max_spread=rejected_max_spread,
+        rejected_random=rejected_random,
     )
 
 
@@ -225,6 +316,14 @@ def _calculate_metrics(
     strategy_name: str,
     fee_pct: float,
     slippage_pct: float,
+    min_notional_usdt: float = 0.0,
+    spread_pct: float = 0.0,
+    max_spread_pct: float | None = None,
+    rejection_rate: float = 0.0,
+    partial_fill_impact: float = 0.0,
+    rejected_min_notional: int = 0,
+    rejected_max_spread: int = 0,
+    rejected_random: int = 0,
 ) -> BacktestResult:
     """Calculate backtest performance metrics."""
     if not trades:
@@ -238,6 +337,14 @@ def _calculate_metrics(
             max_drawdown=0, win_rate=0, avg_win=0, avg_loss=0,
             profit_factor=0, sharpe_ratio=0,
             fee_pct=fee_pct, slippage_pct=slippage_pct,
+            min_notional_usdt=min_notional_usdt,
+            spread_pct=spread_pct,
+            max_spread_pct=max_spread_pct,
+            rejection_rate=rejection_rate,
+            partial_fill_impact=partial_fill_impact,
+            rejected_min_notional=rejected_min_notional,
+            rejected_max_spread=rejected_max_spread,
+            rejected_random=rejected_random,
         )
 
     pnls = [t.pnl for t in trades]  # net P&L (after fees)
@@ -298,6 +405,14 @@ def _calculate_metrics(
         sharpe_ratio=round(sharpe, 2),
         fee_pct=fee_pct,
         slippage_pct=slippage_pct,
+        min_notional_usdt=min_notional_usdt,
+        spread_pct=spread_pct,
+        max_spread_pct=max_spread_pct,
+        rejection_rate=rejection_rate,
+        partial_fill_impact=partial_fill_impact,
+        rejected_min_notional=rejected_min_notional,
+        rejected_max_spread=rejected_max_spread,
+        rejected_random=rejected_random,
         trades=trades,
     )
 
@@ -313,6 +428,38 @@ def print_report(result: BacktestResult) -> None:
     print(f'  Candles:        {result.total_candles}')
     print(f'  Fee rate:       {result.fee_pct}% per side')
     print(f'  Slippage:       {result.slippage_pct}% per market order')
+
+    # Realism block (#42) — shown only if any filter is active or any order was rejected
+    any_rejections = (
+        result.rejected_min_notional
+        + result.rejected_max_spread
+        + result.rejected_random
+    ) > 0
+    any_active = (
+        result.min_notional_usdt > 0
+        or result.spread_pct > 0
+        or result.max_spread_pct is not None
+        or result.rejection_rate > 0
+        or result.partial_fill_impact > 0
+    )
+    if any_active or any_rejections:
+        print('-' * 60)
+        print('  Realism filters (#42):')
+        if result.min_notional_usdt > 0:
+            print(f'    min notional:       ${result.min_notional_usdt:.2f}')
+        if result.spread_pct > 0:
+            print(f'    spread:             {result.spread_pct}%')
+        if result.max_spread_pct is not None:
+            print(f'    max spread:         {result.max_spread_pct}%')
+        if result.rejection_rate > 0:
+            print(f'    rejection rate:     {result.rejection_rate}')
+        if result.partial_fill_impact > 0:
+            print(f'    partial fill impact: {result.partial_fill_impact}')
+        if any_rejections:
+            print(f'    rejected (min_notional): {result.rejected_min_notional}')
+            print(f'    rejected (max_spread):   {result.rejected_max_spread}')
+            print(f'    rejected (random):       {result.rejected_random}')
+
     print('-' * 60)
     print(f'  Total Trades:   {result.total_trades}')
     print(f'  Win / Loss:     {result.winning_trades} / {result.losing_trades}')
@@ -353,13 +500,16 @@ async def fetch_historical_data(
     return candles_to_dataframe(candles)
 
 
-# Exchange fee presets (taker fee per side, as percentage)
-_FEE_PRESETS = {
-    'coinbase': 0.4,   # Coinbase Advanced Trade tier 1
-    'okx': 0.1,        # OKX spot standard
-    'bybit': 0.1,      # Bybit V5 spot standard
-    'binance': 0.1,    # Binance spot standard
+# Exchange presets (#42) — fee per side + minimum notional per order.
+# Unified so --exchange can resolve both fee and min-notional from one table.
+_EXCHANGE_PRESETS: dict[str, dict[str, float]] = {
+    'coinbase': {'fee_pct': 0.4, 'min_notional_usdt': 1.0},   # Advanced Trade tier 1
+    'okx':      {'fee_pct': 0.1, 'min_notional_usdt': 1.0},   # OKX spot standard
+    'bybit':    {'fee_pct': 0.1, 'min_notional_usdt': 5.0},   # Bybit V5 spot standard
+    'binance':  {'fee_pct': 0.1, 'min_notional_usdt': 10.0},  # Binance spot standard
 }
+# Back-compat alias — referenced by CLAUDE.md invariant #8.
+_FEE_PRESETS = {k: v['fee_pct'] for k, v in _EXCHANGE_PRESETS.items()}
 
 
 async def main() -> None:
@@ -376,17 +526,47 @@ async def main() -> None:
         help='Exchange fee %% per side. Default depends on --exchange.',
     )
     parser.add_argument(
-        '--exchange', default='coinbase', choices=sorted(_FEE_PRESETS.keys()),
-        help='Exchange fee preset (used if --fee-pct not set)',
+        '--exchange', default='coinbase', choices=sorted(_EXCHANGE_PRESETS.keys()),
+        help='Exchange preset for fee and min-notional (if not overridden)',
     )
     parser.add_argument(
         '--slippage-pct', type=float, default=0.05,
         help='Adverse slippage %% per market order (default 0.05)',
     )
+    # Realism filters (#42)
+    parser.add_argument(
+        '--min-notional', type=float, default=None,
+        help='Reject entries below this notional (USDT). Default depends on --exchange.',
+    )
+    parser.add_argument(
+        '--spread-pct', type=float, default=0.0,
+        help='Synthetic bid-ask spread %% (half applied on market entries/exits)',
+    )
+    parser.add_argument(
+        '--max-spread-pct', type=float, default=None,
+        help='Skip entries when spread_pct exceeds this threshold',
+    )
+    parser.add_argument(
+        '--rejection-rate', type=float, default=0.0,
+        help='Probability [0,1] that any entry is randomly rejected (stress test)',
+    )
+    parser.add_argument(
+        '--rng-seed', type=int, default=None,
+        help='Seed for the rejection RNG. Omit for nondeterministic.',
+    )
+    parser.add_argument(
+        '--partial-fill-impact', type=float, default=0.0,
+        help='Extra slippage proportional to size/candle-volume ratio',
+    )
     args = parser.parse_args()
 
     # Resolve fee: explicit --fee-pct wins, otherwise preset
-    fee_pct = args.fee_pct if args.fee_pct is not None else _FEE_PRESETS[args.exchange]
+    fee_pct = args.fee_pct if args.fee_pct is not None else _EXCHANGE_PRESETS[args.exchange]['fee_pct']
+    # Resolve min-notional: explicit --min-notional wins, otherwise preset
+    min_notional = (
+        args.min_notional if args.min_notional is not None
+        else _EXCHANGE_PRESETS[args.exchange]['min_notional_usdt']
+    )
 
     load_dotenv()
     config = load_config()
@@ -410,6 +590,12 @@ async def main() -> None:
         position_size_usdt=args.size,
         fee_pct=fee_pct,
         slippage_pct=args.slippage_pct,
+        min_notional_usdt=min_notional,
+        spread_pct=args.spread_pct,
+        max_spread_pct=args.max_spread_pct,
+        rejection_rate=args.rejection_rate,
+        rng_seed=args.rng_seed,
+        partial_fill_impact=args.partial_fill_impact,
     )
     result.pair = args.pair
     result.timeframe = args.timeframe
