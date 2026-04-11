@@ -48,7 +48,10 @@ class BacktestTrade:
     take_profit: float
     exit_idx: int = 0
     exit_price: float = 0.0
-    pnl: float = 0.0
+    gross_pnl: float = 0.0       # price movement * size (before fees)
+    entry_fee: float = 0.0       # fee charged on entry
+    exit_fee: float = 0.0        # fee charged on exit
+    pnl: float = 0.0             # net P&L (gross - fees)
     exit_reason: str = ''
 
 
@@ -63,13 +66,16 @@ class BacktestResult:
     total_trades: int
     winning_trades: int
     losing_trades: int
-    total_pnl: float
+    gross_pnl: float              # total before fees
+    total_fees_paid: float        # sum of entry + exit fees
+    total_pnl: float              # net after fees (what you actually earned)
     max_drawdown: float
     win_rate: float
     avg_win: float
     avg_loss: float
     profit_factor: float
     sharpe_ratio: float
+    fee_pct: float                # fee rate used for the simulation
     trades: list[BacktestTrade] = field(default_factory=list)
 
 
@@ -80,8 +86,16 @@ def run_backtest(
     stop_loss_pct: float = 3.0,
     take_profit_pct: float = 5.0,
     position_size_usdt: float = 100.0,
+    fee_pct: float = 0.4,  # Coinbase Advanced Trade taker fee by default
 ) -> BacktestResult:
-    """Run a backtest on historical OHLCV data."""
+    """Run a backtest on historical OHLCV data.
+
+    Args:
+        fee_pct: Exchange fee as a percentage per side. Default 0.4% is
+            Coinbase Advanced Trade taker fee. Use 0.1% for OKX/Bybit spot,
+            0.075% for Binance with BNB discount, etc. Fees are deducted on
+            both entry and exit, so round-trip cost is 2 * fee_pct.
+    """
     strategy = MomentumStrategy()
 
     if len(df) < strategy.required_candle_count:
@@ -94,14 +108,27 @@ def run_backtest(
             pair='', timeframe='', strategy=strategy_name,
             start_date='', end_date='', total_candles=len(df),
             total_trades=0, winning_trades=0, losing_trades=0,
-            total_pnl=0, max_drawdown=0, win_rate=0,
-            avg_win=0, avg_loss=0, profit_factor=0, sharpe_ratio=0,
+            gross_pnl=0, total_fees_paid=0, total_pnl=0,
+            max_drawdown=0, win_rate=0, avg_win=0, avg_loss=0,
+            profit_factor=0, sharpe_ratio=0, fee_pct=fee_pct,
         )
 
     # Run strategy on full dataframe
     processed = strategy.populate_indicators(df.copy(), {})
     processed = strategy.populate_entry_trend(processed, {})
     processed = strategy.populate_exit_trend(processed, {})
+
+    fee_rate = fee_pct / 100.0
+
+    def _finalize(trade: BacktestTrade, exit_idx: int, exit_price: float, reason: str) -> None:
+        """Compute gross P&L, entry/exit fees, and net P&L on exit."""
+        trade.exit_idx = exit_idx
+        trade.exit_price = exit_price
+        trade.exit_reason = reason
+        trade.gross_pnl = (exit_price - trade.entry_price) * trade.size
+        trade.entry_fee = trade.entry_price * trade.size * fee_rate
+        trade.exit_fee = exit_price * trade.size * fee_rate
+        trade.pnl = trade.gross_pnl - trade.entry_fee - trade.exit_fee
 
     trades: list[BacktestTrade] = []
     in_position = False
@@ -114,13 +141,7 @@ def run_backtest(
         if in_position and current_trade:
             # Check stop-loss
             if row['low'] <= current_trade.stop_loss:
-                current_trade.exit_idx = i
-                current_trade.exit_price = current_trade.stop_loss
-                current_trade.exit_reason = 'stop_loss'
-                current_trade.pnl = (
-                    (current_trade.exit_price - current_trade.entry_price)
-                    * current_trade.size
-                )
+                _finalize(current_trade, i, current_trade.stop_loss, 'stop_loss')
                 trades.append(current_trade)
                 in_position = False
                 current_trade = None
@@ -128,13 +149,7 @@ def run_backtest(
 
             # Check take-profit
             if row['high'] >= current_trade.take_profit:
-                current_trade.exit_idx = i
-                current_trade.exit_price = current_trade.take_profit
-                current_trade.exit_reason = 'take_profit'
-                current_trade.pnl = (
-                    (current_trade.exit_price - current_trade.entry_price)
-                    * current_trade.size
-                )
+                _finalize(current_trade, i, current_trade.take_profit, 'take_profit')
                 trades.append(current_trade)
                 in_position = False
                 current_trade = None
@@ -142,13 +157,7 @@ def run_backtest(
 
             # Check exit signal
             if row.get('exit_long', 0) == 1:
-                current_trade.exit_idx = i
-                current_trade.exit_price = price
-                current_trade.exit_reason = 'exit_signal'
-                current_trade.pnl = (
-                    (current_trade.exit_price - current_trade.entry_price)
-                    * current_trade.size
-                )
+                _finalize(current_trade, i, price, 'exit_signal')
                 trades.append(current_trade)
                 in_position = False
                 current_trade = None
@@ -174,13 +183,7 @@ def run_backtest(
     # Close any open position at the end
     if in_position and current_trade:
         last_price = processed.iloc[-1]['close']
-        current_trade.exit_idx = len(processed) - 1
-        current_trade.exit_price = last_price
-        current_trade.exit_reason = 'end_of_data'
-        current_trade.pnl = (
-            (current_trade.exit_price - current_trade.entry_price)
-            * current_trade.size
-        )
+        _finalize(current_trade, len(processed) - 1, last_price, 'end_of_data')
         trades.append(current_trade)
 
     # Calculate metrics
@@ -188,6 +191,7 @@ def run_backtest(
         trades=trades,
         df=processed,
         strategy_name=strategy_name,
+        fee_pct=fee_pct,
     )
 
 
@@ -196,6 +200,7 @@ def _calculate_metrics(
     trades: list[BacktestTrade],
     df: pd.DataFrame,
     strategy_name: str,
+    fee_pct: float,
 ) -> BacktestResult:
     """Calculate backtest performance metrics."""
     if not trades:
@@ -205,19 +210,23 @@ def _calculate_metrics(
             end_date=str(df.iloc[-1]['date']) if len(df) > 0 else '',
             total_candles=len(df),
             total_trades=0, winning_trades=0, losing_trades=0,
-            total_pnl=0, max_drawdown=0, win_rate=0,
-            avg_win=0, avg_loss=0, profit_factor=0, sharpe_ratio=0,
+            gross_pnl=0, total_fees_paid=0, total_pnl=0,
+            max_drawdown=0, win_rate=0, avg_win=0, avg_loss=0,
+            profit_factor=0, sharpe_ratio=0, fee_pct=fee_pct,
         )
 
-    pnls = [t.pnl for t in trades]
+    pnls = [t.pnl for t in trades]  # net P&L (after fees)
     wins = [p for p in pnls if p > 0]
     losses = [p for p in pnls if p <= 0]
 
     total_pnl = sum(pnls)
+    gross_pnl = sum(t.gross_pnl for t in trades)
+    total_fees = sum(t.entry_fee + t.exit_fee for t in trades)
+
     gross_profit = sum(wins) if wins else 0
     gross_loss = abs(sum(losses)) if losses else 0
 
-    # Max drawdown
+    # Max drawdown on cumulative net P&L
     cumulative = []
     running = 0.0
     for p in pnls:
@@ -233,7 +242,7 @@ def _calculate_metrics(
         if dd > max_dd:
             max_dd = dd
 
-    # Sharpe ratio (simplified — annualized from trade returns)
+    # Sharpe ratio (simplified — annualized from net trade returns)
     if len(pnls) > 1:
         import statistics
 
@@ -253,6 +262,8 @@ def _calculate_metrics(
         total_trades=len(trades),
         winning_trades=len(wins),
         losing_trades=len(losses),
+        gross_pnl=round(gross_pnl, 2),
+        total_fees_paid=round(total_fees, 2),
         total_pnl=round(total_pnl, 2),
         max_drawdown=round(max_dd, 2),
         win_rate=round(len(wins) / len(trades) * 100, 1) if trades else 0,
@@ -260,6 +271,7 @@ def _calculate_metrics(
         avg_loss=round(sum(losses) / len(losses), 2) if losses else 0,
         profit_factor=round(gross_profit / gross_loss, 2) if gross_loss > 0 else float('inf'),
         sharpe_ratio=round(sharpe, 2),
+        fee_pct=fee_pct,
         trades=trades,
     )
 
@@ -273,14 +285,19 @@ def print_report(result: BacktestResult) -> None:
     print(f'  Timeframe:      {result.timeframe}')
     print(f'  Period:         {result.start_date} → {result.end_date}')
     print(f'  Candles:        {result.total_candles}')
+    print(f'  Fee rate:       {result.fee_pct}% per side')
     print('-' * 60)
     print(f'  Total Trades:   {result.total_trades}')
     print(f'  Win / Loss:     {result.winning_trades} / {result.losing_trades}')
     print(f'  Win Rate:       {result.win_rate}%')
-    print(f'  Total P&L:      ${result.total_pnl:+.2f}')
+    print('-' * 60)
+    print(f'  Gross P&L:      ${result.gross_pnl:+.2f}  (before fees)')
+    print(f'  Total fees:     ${result.total_fees_paid:.2f}')
+    print(f'  NET P&L:        ${result.total_pnl:+.2f}  (what you actually earn)')
+    print('-' * 60)
     print(f'  Max Drawdown:   ${result.max_drawdown:.2f}')
-    print(f'  Avg Win:        ${result.avg_win:+.2f}')
-    print(f'  Avg Loss:       ${result.avg_loss:+.2f}')
+    print(f'  Avg Win (net):  ${result.avg_win:+.2f}')
+    print(f'  Avg Loss (net): ${result.avg_loss:+.2f}')
     print(f'  Profit Factor:  {result.profit_factor}')
     print(f'  Sharpe Ratio:   {result.sharpe_ratio}')
     print('-' * 60)
@@ -309,6 +326,15 @@ async def fetch_historical_data(
     return candles_to_dataframe(candles)
 
 
+# Exchange fee presets (taker fee per side, as percentage)
+_FEE_PRESETS = {
+    'coinbase': 0.4,   # Coinbase Advanced Trade tier 1
+    'okx': 0.1,        # OKX spot standard
+    'bybit': 0.1,      # Bybit V5 spot standard
+    'binance': 0.1,    # Binance spot standard
+}
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description='Backtest trading strategies')
     parser.add_argument('--pair', default='BTC-USDT', help='Trading pair')
@@ -317,8 +343,19 @@ async def main() -> None:
     parser.add_argument('--strategy', default='momentum', help='Strategy name')
     parser.add_argument('--sl', type=float, default=3.0, help='Stop-loss %%')
     parser.add_argument('--tp', type=float, default=5.0, help='Take-profit %%')
-    parser.add_argument('--size', type=float, default=100.0, help='Position size (USDT)')
+    parser.add_argument('--size', type=float, default=100.0, help='Position size (quote ccy)')
+    parser.add_argument(
+        '--fee-pct', type=float, default=None,
+        help='Exchange fee %% per side. Default depends on --exchange.',
+    )
+    parser.add_argument(
+        '--exchange', default='coinbase', choices=sorted(_FEE_PRESETS.keys()),
+        help='Exchange fee preset (used if --fee-pct not set)',
+    )
     args = parser.parse_args()
+
+    # Resolve fee: explicit --fee-pct wins, otherwise preset
+    fee_pct = args.fee_pct if args.fee_pct is not None else _FEE_PRESETS[args.exchange]
 
     load_dotenv()
     config = load_config()
@@ -340,6 +377,7 @@ async def main() -> None:
         stop_loss_pct=args.sl,
         take_profit_pct=args.tp,
         position_size_usdt=args.size,
+        fee_pct=fee_pct,
     )
     result.pair = args.pair
     result.timeframe = args.timeframe
