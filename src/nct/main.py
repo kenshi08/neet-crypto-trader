@@ -294,15 +294,24 @@ class TradingAgent:
             log.warning('no_price_for_trade', pair=pair)
             return
 
-        # Get available balance
+        # Get available balance — detect quote currency from the pair
+        # e.g. BTC-USD → USD, ETH-USDT → USDT, SOL-USDC → USDC
+        quote_currency = pair.split('-')[-1] if '-' in pair else 'USDT'
         try:
-            balances = await self._client.get_balance('USDT')
-            available = balances[0].available if balances else Decimal(0)
+            balances = await self._client.get_balance(quote_currency)
+            matching = [b for b in balances if b.currency == quote_currency]
+            available = matching[0].available if matching else Decimal(0)
         except Exception:
-            # Fall back to budget remaining as simulated balance
+            available = Decimal(0)
+            log.warning('balance_fetch_failed', pair=pair)
+
+        # If real balance is zero (empty demo account), fall back to
+        # budget_remaining so the strategy can still place simulated trades.
+        if available <= 0:
             available = self._budget_manager.budget_remaining
-            log.warning(
-                'balance_fetch_failed_using_budget',
+            log.info(
+                'using_simulated_balance',
+                quote_currency=quote_currency,
                 simulated_balance=str(available),
             )
 
