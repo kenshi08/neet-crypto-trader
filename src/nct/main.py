@@ -29,9 +29,9 @@ from nct.risk.protections import (
     StoplossGuard,
 )
 from nct.risk.risk_manager import RiskManager
-from nct.strategy.base import Signal
+from nct.strategy.base import IStrategy, Signal
 from nct.strategy.data_provider import DataProvider
-from nct.strategy.momentum import MomentumStrategy
+from nct.strategy.factory import create_strategy
 
 log = structlog.get_logger()
 
@@ -68,7 +68,7 @@ class TradingAgent:
         self._risk_manager: RiskManager | None = None
         self._portfolio: PortfolioTracker | None = None
         self._executor: OrderExecutor | None = None
-        self._strategy: MomentumStrategy | None = None
+        self._strategy: IStrategy | None = None
         self._notifier: TelegramNotifier | None = None
 
     async def initialize(self) -> bool:
@@ -149,8 +149,11 @@ class TradingAgent:
             protection_manager=self._protection_manager,
         )
 
-        # 10. Strategy (with config-driven parameters)
-        self._strategy = MomentumStrategy(**self._config.strategy_params)
+        # 10. Strategy — selected via config.trading.strategy, params from TOML
+        self._strategy = create_strategy(
+            self._config.trading.strategy,
+            self._config.strategy_params,
+        )
 
         # 11. Data provider
         self._data_provider = DataProvider(

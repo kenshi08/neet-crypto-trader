@@ -12,8 +12,17 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   if stop-loss or take-profit placement fails, eliminating the possibility
   of an unprotected open position. Previously the code logged a CRITICAL
   warning and kept the position open, violating the safety invariant. (#36)
+- **Strategy selection is now config-driven** — Previously `main.py` hardcoded
+  `MomentumStrategy` even though `MeanReversionStrategy` was available. New
+  strategy factory (`src/nct/strategy/factory.py`) reads `config.trading.strategy`
+  and instantiates the correct class. Setting `strategy = "mean_reversion"` in
+  TOML now actually uses that strategy. (#37)
 
 ### Added
+- Strategy factory pattern with `create_strategy()` and `list_strategies()` (#37)
+- `config/default.toml` now includes both `[strategy.momentum]` and
+  `[strategy.mean_reversion]` sections with documented parameters
+- README documents how to switch strategies via config
 - **Multi-exchange support: Coinbase** — third exchange option, accessible from Singapore (#33, #34, #35)
   - `CoinbaseClient` implementing `IExchange` via `coinbase-advanced-py` SDK
   - `CoinbaseCredentials` config with `COINBASE_` env prefix (CDP API keys)

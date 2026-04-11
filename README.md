@@ -80,7 +80,7 @@ OKX_DEMO_MODE=true
 ```toml
 [trading]
 pairs = ["BTC-USDT", "ETH-USDT", "SOL-USDT"]
-strategy = "momentum"
+strategy = "momentum"            # or "mean_reversion"
 timeframe = "15m"
 max_open_positions = 3
 
@@ -94,7 +94,29 @@ max_gain_pct = 15.0
 stop_loss_pct = 3.0
 take_profit_pct = 5.0
 time_limit_seconds = 3600
+
+# Strategy-specific parameters under [strategy.<name>]
+# The bot reads the section matching `trading.strategy` above.
+
+[strategy.momentum]
+rsi_period = 14
+rsi_oversold = 30.0
+rsi_overbought = 70.0
+macd_fast = 12
+macd_slow = 26
+macd_signal = 9
+
+[strategy.mean_reversion]
+bb_period = 20
+bb_std = 2.0
+volume_multiplier = 1.2
 ```
+
+### Switching Strategies
+
+Change `strategy = "momentum"` to `strategy = "mean_reversion"` in your TOML
+config and restart the bot. The strategy factory picks the right implementation
+at startup. Available strategies: `momentum`, `mean_reversion`.
 
 ## Project Structure
 

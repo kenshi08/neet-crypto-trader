@@ -22,6 +22,9 @@ trailing_stop_activation_pct = 2.0
 trailing_stop_delta_pct = 1.0
 min_signal_confidence = 0.6     # Minimum strategy confidence to enter a trade
 
+# Strategy-specific parameters under [strategy.<name>].
+# The active section is whichever matches `trading.strategy` above.
+
 [strategy.momentum]
 rsi_period = 14
 rsi_oversold = 30.0             # RSI below this = oversold (buy signal)
@@ -29,3 +32,12 @@ rsi_overbought = 70.0           # RSI above this = overbought (sell signal)
 macd_fast = 12
 macd_slow = 26
 macd_signal = 9
+
+[strategy.mean_reversion]
+bb_period = 20                  # Bollinger Bands lookback period
+bb_std = 2.0                    # Standard deviations for band width
+volume_ma_period = 20           # Volume moving average period
+volume_multiplier = 1.2         # Volume must exceed avg * this for signal
+atr_period = 14
+atr_sl_multiplier = 1.5
+atr_tp_multiplier = 2.0

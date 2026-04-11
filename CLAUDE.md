@@ -38,7 +38,7 @@ These are drawn from analyzing Freqtrade (48.5k stars), Hummingbot (18k stars), 
 
 1. **Triple Barrier on every position** — Stop-loss + take-profit + time-limit. Server-side stop-loss via OKX algo orders (executes even if bot crashes). Non-negotiable.
 2. **Dry-run at the exchange layer** — `create_order()` branches to simulation or real execution. Uses real orderbook for slippage simulation. Separate SQLite DB for paper trades.
-3. **Strategy-as-plugin** — Abstract `IStrategy` base class. Strategies loaded dynamically. Same code for backtest and live.
+3. **Strategy-as-plugin** — Abstract `IStrategy` base class. Strategies are selected via `config.trading.strategy` and instantiated by `create_strategy()` in `src/nct/strategy/factory.py`. Same code runs in backtest and live. To add a new strategy: subclass `IStrategy`, register in `_STRATEGY_REGISTRY`, add params section to TOML.
 4. **Hard risk rules first, LLM second** — Budget limits, position sizing, drawdown thresholds are hard-coded rules. LLM interpretation is an optional enhancement layer, never the only safeguard.
 5. **Retry with backoff on every exchange call** — `@retrier` decorator with exponential backoff (1, 4, 9, 16s). OKX has strict rate limits.
 6. **Credential isolation** — Copy API keys to exchange config, scrub from main config dict to prevent accidental logging.
