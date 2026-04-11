@@ -129,10 +129,11 @@ class TelegramNotifier:
         reason: str,
     ) -> None:
         emoji = '+' if pnl > 0 else ''
+        quote = inst_id.split('-')[-1] if '-' in inst_id else ''
         await self.send(
             f'*Trade Closed*\n'
             f'`{inst_id}` — {reason}\n'
-            f'P&L: `{emoji}{pnl} USDT`'
+            f'P&L: `{emoji}{pnl:.4f} {quote}`'
         )
 
     async def notify_daily_summary(
@@ -145,10 +146,10 @@ class TelegramNotifier:
     ) -> None:
         await self.send(
             f'*Daily Summary*\n'
-            f'Daily P&L: `{daily_pnl:+} USDT`\n'
-            f'Period P&L: `{period_pnl:+} USDT`\n'
+            f'Daily P&L: `{daily_pnl:+.4f}`\n'
+            f'Period P&L: `{period_pnl:+.4f}`\n'
             f'Trades today: `{trade_count}`\n'
-            f'Budget remaining: `{budget_remaining} USDT`'
+            f'Budget remaining: `{budget_remaining:.4f}`'
         )
 
     async def notify_limit_hit(self, *, reason: str) -> None:
@@ -168,9 +169,9 @@ class TelegramNotifier:
             f'State: `{self._agent.state}`\n'
             f'Open positions: `{pt.open_trade_count}`\n'
             f'Pairs: `{", ".join(pt.open_trades.keys()) or "none"}`\n'
-            f'Daily P&L: `{bm.daily_pnl:+} USDT`\n'
-            f'Period P&L: `{bm.realized_pnl:+} USDT`\n'
-            f'Budget remaining: `{bm.budget_remaining} USDT`'
+            f'Daily P&L: `{bm.daily_pnl:+.4f}`\n'
+            f'Period P&L: `{bm.realized_pnl:+.4f}`\n'
+            f'Budget remaining: `{bm.budget_remaining:.4f}`'
         )
         await update.message.reply_text(msg, parse_mode='Markdown')
 
