@@ -13,8 +13,8 @@ log = structlog.get_logger()
 def create_exchange_client(config: AppConfig) -> IExchange:
     """Instantiate the configured exchange client.
 
-    Selects between OKXClient and BybitClient based on `config.exchange`
-    (set via the EXCHANGE env var, defaults to 'okx').
+    Selects between OKXClient, BybitClient, and CoinbaseClient based on
+    `config.exchange` (set via the EXCHANGE env var, defaults to 'okx').
     """
     if config.exchange == 'bybit':
         from nct.exchange.bybit_client import BybitClient
@@ -22,11 +22,17 @@ def create_exchange_client(config: AppConfig) -> IExchange:
         log.info('creating_exchange_client', exchange='bybit')
         return BybitClient(config.bybit)
 
+    if config.exchange == 'coinbase':
+        from nct.exchange.coinbase_client import CoinbaseClient
+
+        log.info('creating_exchange_client', exchange='coinbase')
+        return CoinbaseClient(config.coinbase)
+
     if config.exchange == 'okx':
         from nct.exchange.client import OKXClient
 
         log.info('creating_exchange_client', exchange='okx')
         return OKXClient(config.okx)
 
-    msg = f'Unknown exchange: {config.exchange!r}. Supported: okx, bybit'
+    msg = f'Unknown exchange: {config.exchange!r}. Supported: okx, bybit, coinbase'
     raise ValueError(msg)

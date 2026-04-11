@@ -61,6 +61,20 @@ class BybitCredentials(BaseSettings):
 
 
 # ---------------------------------------------------------------------------
+# Coinbase credentials (from .env only)
+# ---------------------------------------------------------------------------
+class CoinbaseCredentials(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix='COINBASE_')
+
+    # CDP key name, e.g. "organizations/xxx/apiKeys/yyy"
+    api_key: str = ''
+    # PEM-formatted private key content (or path to key file)
+    api_secret: str = ''
+    # Coinbase Advanced Trade has no public sandbox. Demo mode = dry-run only.
+    demo_mode: bool = True
+
+
+# ---------------------------------------------------------------------------
 # Trading configuration
 # ---------------------------------------------------------------------------
 class TradingConfig(BaseModel):
@@ -162,13 +176,14 @@ class _ExchangeSelector(BaseSettings):
     """Reads the EXCHANGE env var to choose which exchange to use."""
     model_config = SettingsConfigDict(env_prefix='')
 
-    exchange: Literal['okx', 'bybit'] = 'okx'
+    exchange: Literal['okx', 'bybit', 'coinbase'] = 'okx'
 
 
 class AppConfig(BaseModel):
-    exchange: Literal['okx', 'bybit'] = 'okx'
+    exchange: Literal['okx', 'bybit', 'coinbase'] = 'okx'
     okx: OKXCredentials = Field(default_factory=OKXCredentials)
     bybit: BybitCredentials = Field(default_factory=BybitCredentials)
+    coinbase: CoinbaseCredentials = Field(default_factory=CoinbaseCredentials)
     trading: TradingConfig = Field(default_factory=TradingConfig)
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
     risk: RiskConfig = Field(default_factory=RiskConfig)
@@ -196,6 +211,7 @@ def load_config(config_path: Path | None = None) -> AppConfig:
 
     okx = OKXCredentials()
     bybit = BybitCredentials()
+    coinbase = CoinbaseCredentials()
     telegram = TelegramConfig()
     exchange_selector = _ExchangeSelector()
 
@@ -207,12 +223,13 @@ def load_config(config_path: Path | None = None) -> AppConfig:
 
     config = AppConfig(
         exchange=exchange_selector.exchange,
-        okx=okx, bybit=bybit,
+        okx=okx, bybit=bybit, coinbase=coinbase,
         trading=trading, budget=budget, risk=risk,
         telegram=telegram, strategy_params=strategy_params,
     )
 
-    active_creds = config.bybit if config.exchange == 'bybit' else config.okx
+    creds_map = {'okx': config.okx, 'bybit': config.bybit, 'coinbase': config.coinbase}
+    active_creds = creds_map[config.exchange]
 
     log.info(
         'config_summary',

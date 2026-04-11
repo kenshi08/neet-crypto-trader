@@ -74,11 +74,12 @@ class TradingAgent:
     async def initialize(self) -> bool:
         """Initialize all components. Returns True if successful."""
         # Determine active exchange credentials based on config.exchange
-        active_creds = (
-            self._config.bybit
-            if self._config.exchange == 'bybit'
-            else self._config.okx
-        )
+        _creds_map = {
+            'okx': self._config.okx,
+            'bybit': self._config.bybit,
+            'coinbase': self._config.coinbase,
+        }
+        active_creds = _creds_map[self._config.exchange]
 
         log.info(
             'agent_initializing',

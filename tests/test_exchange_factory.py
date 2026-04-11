@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from nct.config import AppConfig, BybitCredentials, OKXCredentials
+from nct.config import AppConfig, BybitCredentials, CoinbaseCredentials, OKXCredentials
 from nct.exchange.bybit_client import BybitClient
 from nct.exchange.client import OKXClient
+from nct.exchange.coinbase_client import CoinbaseClient
 from nct.exchange.factory import create_exchange_client
 
 
@@ -31,6 +32,14 @@ class TestExchangeFactory:
         )
         client = create_exchange_client(config)
         assert isinstance(client, BybitClient)
+
+    def test_creates_coinbase_when_selected(self):
+        config = AppConfig(
+            exchange='coinbase',
+            coinbase=CoinbaseCredentials(api_key='k', api_secret='s'),
+        )
+        client = create_exchange_client(config)
+        assert isinstance(client, CoinbaseClient)
 
     def test_unknown_exchange_raises(self):
         # Bypass pydantic validation by manipulating after construction
