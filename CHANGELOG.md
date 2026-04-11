@@ -7,6 +7,12 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- **CRITICAL: Stop-loss atomicity** — `OrderExecutor` now reverses the entry
+  if stop-loss or take-profit placement fails, eliminating the possibility
+  of an unprotected open position. Previously the code logged a CRITICAL
+  warning and kept the position open, violating the safety invariant. (#36)
+
 ### Added
 - **Multi-exchange support: Coinbase** — third exchange option, accessible from Singapore (#33, #34, #35)
   - `CoinbaseClient` implementing `IExchange` via `coinbase-advanced-py` SDK

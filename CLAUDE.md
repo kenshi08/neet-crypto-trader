@@ -612,9 +612,14 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. **Updat
 
 ## Safety Invariants (never violate)
 
-1. Every position MUST have a server-side stop-loss (OKX algo order)
+1. **Every position MUST have a server-side stop-loss AND take-profit** (#36).
+   Enforced atomically in `OrderExecutor.execute_trade()`: if SL or TP placement
+   fails after entry, the executor immediately reverses the entry with a market
+   order in the opposite direction. No path allows an open position without
+   both barriers in place. If the reversal itself fails, logs CRITICAL with
+   `entry_reversal_failed` — manual intervention required.
 2. BudgetManager MUST be checked before every order — no bypass path
 3. Paper trading (`demo_mode=true`) is the default — live requires explicit opt-in
 4. API keys MUST never appear in logs, config files, or error messages
-5. Withdraw permission MUST NOT be enabled on the OKX API key
+5. Withdraw permission MUST NOT be enabled on any exchange API key
 6. The bot MUST gracefully close on SIGINT/SIGTERM (cancel open orders, log state)

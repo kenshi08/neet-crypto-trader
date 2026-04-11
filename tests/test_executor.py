@@ -137,6 +137,54 @@ class TestExecuteTrade:
         assert executor._portfolio.has_open_trade('BTC-USDT')
 
 
+class TestAtomicStopLoss:
+    """Safety invariant: no position may exist without a server-side stop-loss."""
+
+    async def test_reverses_entry_when_stop_loss_fails(
+        self, executor: OrderExecutor, mock_client: OKXClient,
+    ):
+        # Make place_algo_order raise to simulate SL placement failure
+        mock_client._trade_api.place_algo_order.side_effect = Exception(
+            'simulated SL placement failure',
+        )
+
+        trade = await executor.execute_trade(
+            inst_id='BTC-USDT', decision=_approved_decision(),
+        )
+
+        # Execution must fail, no trade tracked, no budget consumed
+        assert trade is None
+        assert not executor._portfolio.has_open_trade('BTC-USDT')
+        assert executor._budget.capital_deployed == Decimal(0)
+
+        # The executor should have placed two dry-run orders:
+        # 1. Entry BUY order
+        # 2. Reversal SELL order (closing the unprotected entry)
+        assert len(mock_client._dry_run_orders) == 2
+        sides = [o.side.value for o in mock_client._dry_run_orders.values()]
+        assert 'buy' in sides
+        assert 'sell' in sides
+
+    async def test_reverses_entry_when_take_profit_fails(
+        self, executor: OrderExecutor, mock_client: OKXClient,
+    ):
+        # SL succeeds (first call), TP fails (second call)
+        mock_client._trade_api.place_algo_order.side_effect = [
+            {'code': '0', 'data': [{'algoId': 'sl-algo-1'}]},
+            Exception('simulated TP placement failure'),
+        ]
+
+        trade = await executor.execute_trade(
+            inst_id='BTC-USDT', decision=_approved_decision(),
+        )
+
+        assert trade is None
+        assert not executor._portfolio.has_open_trade('BTC-USDT')
+        assert executor._budget.capital_deployed == Decimal(0)
+        # Entry + reversal = 2 dry-run orders
+        assert len(mock_client._dry_run_orders) == 2
+
+
 class TestCloseTrade:
     async def test_close_trade_records_pnl(self, executor: OrderExecutor):
         await executor.execute_trade(

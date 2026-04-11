@@ -86,7 +86,7 @@ class OrderExecutor:
         fee = order_resp.fee if order_resp.fee else Decimal(0)
 
         # Place server-side stop-loss (CRITICAL — safety invariant)
-        sl_algo_id = ''
+        # If this fails, we MUST reverse the entry. No unprotected positions.
         try:
             sl_algo_id = await self._client.place_stop_loss(
                 inst_id=inst_id,
@@ -95,15 +95,20 @@ class OrderExecutor:
                 trigger_price=decision.stop_loss_price,
             )
         except Exception:
-            log.exception(
-                'stop_loss_placement_failed',
+            log.critical(
+                'stop_loss_placement_failed_reversing_entry',
                 inst_id=inst_id,
-                msg='CRITICAL: position opened without server-side stop-loss',
+                msg='Stop-loss placement failed — reversing entry to avoid unprotected position',
             )
-            # We still track the trade, but this is a critical alert
+            await self._reverse_entry(
+                inst_id=inst_id,
+                close_side=close_side,
+                size=decision.size,
+            )
+            return None
 
-        # Place server-side take-profit
-        tp_algo_id = ''
+        # Place server-side take-profit. If this fails, we reverse too —
+        # the triple barrier requires all three exits to be in place.
         try:
             tp_algo_id = await self._client.place_take_profit(
                 inst_id=inst_id,
@@ -112,7 +117,22 @@ class OrderExecutor:
                 trigger_price=decision.take_profit_price,
             )
         except Exception:
-            log.exception('take_profit_placement_failed', inst_id=inst_id)
+            log.critical(
+                'take_profit_placement_failed_reversing_entry',
+                inst_id=inst_id,
+                msg='Take-profit placement failed — reversing entry and cancelling stop-loss',
+            )
+            # Cancel the stop-loss we just placed
+            try:
+                await self._client.cancel_order(inst_id, sl_algo_id)
+            except Exception:
+                log.exception('cancel_stop_loss_after_tp_failure', sl_algo_id=sl_algo_id)
+            await self._reverse_entry(
+                inst_id=inst_id,
+                close_side=close_side,
+                size=decision.size,
+            )
+            return None
 
         # Track in portfolio
         trade = await self._portfolio.open_trade(
@@ -147,6 +167,42 @@ class OrderExecutor:
         )
 
         return trade
+
+    async def _reverse_entry(
+        self,
+        *,
+        inst_id: str,
+        close_side: Side,
+        size: Decimal,
+    ) -> None:
+        """Place a market order to reverse an entry whose SL/TP placement failed.
+
+        This is the safety net that enforces the 'no position without stop-loss'
+        invariant. If the reversal itself fails, we log CRITICAL and give up —
+        the position must be closed manually at that point.
+        """
+        reversal = OrderRequest(
+            inst_id=inst_id,
+            side=close_side,
+            order_type=OrderType.MARKET,
+            size=size,
+            td_mode=TdMode.CASH,
+        )
+        try:
+            await self._client.place_order(reversal)
+            log.warning(
+                'entry_reversed',
+                inst_id=inst_id,
+                side=close_side.value,
+                size=str(size),
+                reason='SL/TP placement failed',
+            )
+        except Exception:
+            log.critical(
+                'entry_reversal_failed',
+                inst_id=inst_id,
+                msg='MANUAL INTERVENTION REQUIRED — position may be unprotected on exchange',
+            )
 
     async def close_trade(
         self,
