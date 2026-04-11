@@ -178,6 +178,125 @@ class TestSlippageModel:
             assert t.exit_price == pytest.approx(80.0, abs=0.01)
 
 
+class TestRealismFilters:
+    """Tests for #42 — min-notional, max-spread, rejection rate, partial fill, spread cost."""
+
+    def test_realism_defaults_are_noop(self):
+        # With all realism params at their defaults, results must match the
+        # baseline run — this is the backward-compat invariant.
+        df = _make_ohlcv(_v_shaped(80))
+        baseline = run_backtest(df)
+        with_defaults = run_backtest(
+            df,
+            min_notional_usdt=0.0,
+            spread_pct=0.0,
+            max_spread_pct=None,
+            rejection_rate=0.0,
+            rng_seed=None,
+            partial_fill_impact=0.0,
+        )
+        assert baseline.total_trades == with_defaults.total_trades
+        assert baseline.gross_pnl == with_defaults.gross_pnl
+        assert baseline.total_pnl == with_defaults.total_pnl
+        assert with_defaults.rejected_min_notional == 0
+        assert with_defaults.rejected_max_spread == 0
+        assert with_defaults.rejected_random == 0
+
+    def test_min_notional_rejects_undersized_entry(self):
+        df = _make_ohlcv(_v_shaped(80))
+        result = run_backtest(df, position_size_usdt=5.0, min_notional_usdt=10.0)
+        assert result.total_trades == 0
+        assert result.rejected_min_notional > 0
+
+    def test_min_notional_zero_disables(self):
+        df = _make_ohlcv(_v_shaped(80))
+        baseline = run_backtest(df, position_size_usdt=5.0)
+        filtered = run_backtest(df, position_size_usdt=5.0, min_notional_usdt=0.0)
+        assert filtered.total_trades == baseline.total_trades
+        assert filtered.rejected_min_notional == 0
+
+    def test_max_spread_skips_wide_spread(self):
+        df = _make_ohlcv(_v_shaped(80))
+        # Synthetic spread (1.0%) above the limit (0.5%) — all entries rejected.
+        result = run_backtest(df, spread_pct=1.0, max_spread_pct=0.5)
+        assert result.total_trades == 0
+        assert result.rejected_max_spread > 0
+
+    def test_max_spread_none_disables(self):
+        df = _make_ohlcv(_v_shaped(80))
+        # max_spread_pct=None → filter disabled even with huge spread_pct.
+        baseline = run_backtest(df)
+        result = run_backtest(df, spread_pct=99.0, max_spread_pct=None)
+        # Trade count should match (filter disabled) even though entries are
+        # priced with a much worse half-spread.
+        assert result.total_trades == baseline.total_trades
+        assert result.rejected_max_spread == 0
+
+    def test_rejection_rate_zero_no_rejections(self):
+        df = _make_ohlcv(_v_shaped(80))
+        result = run_backtest(df, rejection_rate=0.0, rng_seed=1)
+        assert result.rejected_random == 0
+
+    def test_rejection_rate_one_rejects_all(self):
+        df = _make_ohlcv(_v_shaped(80))
+        result = run_backtest(df, rejection_rate=1.0, rng_seed=1)
+        assert result.total_trades == 0
+        assert result.rejected_random > 0
+
+    def test_rejection_rate_deterministic_with_seed(self):
+        df = _make_ohlcv(_v_shaped(80))
+        a = run_backtest(df, rejection_rate=0.5, rng_seed=42)
+        b = run_backtest(df, rejection_rate=0.5, rng_seed=42)
+        assert a.total_trades == b.total_trades
+        assert a.rejected_random == b.rejected_random
+
+    def test_partial_fill_worsens_entry_price(self):
+        # TP/SL scale proportionally with entry_price, so net P&L is nearly
+        # invariant. Assert directly on entry_price instead.
+        df = _make_ohlcv(_v_shaped(80))
+        baseline = run_backtest(df, slippage_pct=0.0, fee_pct=0.0)
+        worsened = run_backtest(
+            df, slippage_pct=0.0, fee_pct=0.0, partial_fill_impact=10.0,
+        )
+        if baseline.trades and worsened.trades:
+            assert worsened.trades[0].entry_price > baseline.trades[0].entry_price
+
+    def test_partial_fill_zero_matches_baseline(self):
+        df = _make_ohlcv(_v_shaped(80))
+        baseline = run_backtest(df, slippage_pct=0.05, fee_pct=0.0)
+        result = run_backtest(
+            df, slippage_pct=0.05, fee_pct=0.0, partial_fill_impact=0.0,
+        )
+        if baseline.trades and result.trades:
+            assert result.trades[0].entry_price == pytest.approx(
+                baseline.trades[0].entry_price, abs=1e-9,
+            )
+
+    def test_spread_affects_market_entry_price(self):
+        df = _make_ohlcv(_v_shaped(80))
+        no_spread = run_backtest(df, slippage_pct=0.0, fee_pct=0.0, spread_pct=0.0)
+        with_spread = run_backtest(df, slippage_pct=0.0, fee_pct=0.0, spread_pct=2.0)
+        if no_spread.trades and with_spread.trades:
+            # Half-spread cost on entries lifts the fill above the close.
+            assert with_spread.trades[0].entry_price > no_spread.trades[0].entry_price
+
+    def test_spread_affects_market_exit_price(self):
+        # Force exits via end_of_data / exit_signal by disabling SL/TP with
+        # wide thresholds — same trick as test_higher_slippage_reduces_net_pnl.
+        df = _make_ohlcv(_v_shaped(80))
+        no_spread = run_backtest(
+            df, slippage_pct=0.0, fee_pct=0.0, spread_pct=0.0,
+            stop_loss_pct=99.0, take_profit_pct=99.0,
+        )
+        with_spread = run_backtest(
+            df, slippage_pct=0.0, fee_pct=0.0, spread_pct=2.0,
+            stop_loss_pct=99.0, take_profit_pct=99.0,
+        )
+        if no_spread.trades and with_spread.trades:
+            # Exit price must be strictly lower with spread applied to market exits.
+            assert with_spread.trades[-1].exit_price < no_spread.trades[-1].exit_price
+
+
 class TestBacktestTrade:
     def test_trade_dataclass(self):
         t = BacktestTrade(

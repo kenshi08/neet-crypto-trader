@@ -653,5 +653,17 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. **Updat
 8. **Backtests MUST model fees** (#38). `run_backtest()` defaults to 0.4%
    per side (Coinbase Advanced Trade taker). Never report backtest P&L
    as "gross only" — use `result.total_pnl` (net) or show the
-   gross/fees/net breakdown. Exchange presets live in `_FEE_PRESETS` in
-   `scripts/backtest.py`.
+   gross/fees/net breakdown. Exchange presets live in `_EXCHANGE_PRESETS`
+   in `scripts/backtest.py` (with `_FEE_PRESETS` kept as a derived alias
+   for back-compat).
+
+   Backtests also support a layer of realism filters (#42), all
+   defaulting to a strict no-op so existing callers are unaffected:
+   `min_notional_usdt` rejects undersized orders, `spread_pct` +
+   `max_spread_pct` apply a half-spread cost to market entries/exits
+   and skip entries in wide-spread conditions, `rejection_rate` +
+   `rng_seed` simulate random API errors for stress-testing, and
+   `partial_fill_impact` adds size/volume-proportional slippage to
+   approximate walking the orderbook. Rejection counters
+   (`rejected_min_notional`, `rejected_max_spread`, `rejected_random`)
+   appear in the report alongside P&L.
