@@ -96,6 +96,8 @@ class CoinbaseClient(IExchange):
 
         self._session: Any = None
         self._dry_run_orders: dict[str, OrderResponse] = {}
+        # Default portfolio UUID — resolved on first balance call
+        self._portfolio_uuid: str | None = None
 
         log.info(
             'coinbase_client_init',
@@ -298,23 +300,67 @@ class CoinbaseClient(IExchange):
     # Account
     # ===================================================================
 
+    async def _resolve_portfolio_uuid(self) -> str | None:
+        """Find the default portfolio UUID (cached after first call)."""
+        if self._portfolio_uuid:
+            return self._portfolio_uuid
+
+        try:
+            result = await self._run_sync(self._session.get_portfolios)
+        except Exception as exc:
+            log.warning('coinbase_get_portfolios_failed', error=str(exc))
+            return None
+
+        portfolios = getattr(result, 'portfolios', []) or []
+        # Prefer DEFAULT type, fall back to first available
+        default_portfolio = next(
+            (p for p in portfolios if getattr(p, 'type', '') == 'DEFAULT'),
+            portfolios[0] if portfolios else None,
+        )
+        if default_portfolio:
+            self._portfolio_uuid = getattr(default_portfolio, 'uuid', None)
+            log.info('coinbase_portfolio_resolved', uuid=self._portfolio_uuid)
+        return self._portfolio_uuid
+
     @retrier
     async def get_balance(self, currency: str = '') -> list[AccountBalance]:
-        """Fetch account balance, optionally filtered by currency."""
+        """Fetch account balance via portfolio breakdown (includes spot positions).
+
+        Uses `get_portfolio_breakdown` instead of `get_accounts` because the
+        latter returns stale/legacy Coinbase Pro accounts while the former
+        returns the actual Advanced Trade spot positions visible in the UI.
+        """
         self._ensure_sdk()
 
         if not self._credentials.api_key:
             return []
 
+        portfolio_uuid = await self._resolve_portfolio_uuid()
+        if not portfolio_uuid:
+            log.warning('coinbase_no_portfolio_uuid')
+            return []
+
         async with self._account_limiter:
             try:
-                result = await self._run_sync(self._session.get_accounts, limit=250)
+                result = await self._run_sync(
+                    self._session.get_portfolio_breakdown,
+                    portfolio_uuid=portfolio_uuid,
+                )
             except Exception as exc:
                 self._handle_error(exc, 'get_balance')
                 raise
 
-        accounts = getattr(result, 'accounts', []) or []
-        balances = [self._parse_balance(a) for a in accounts]
+        # Extract spot positions from breakdown
+        # The SDK returns a nested dict under 'breakdown' attribute
+        breakdown = getattr(result, 'breakdown', None)
+        if breakdown is None:
+            return []
+        if isinstance(breakdown, dict):
+            spot_positions = breakdown.get('spot_positions', [])
+        else:
+            spot_positions = getattr(breakdown, 'spot_positions', []) or []
+
+        balances = [self._parse_spot_position(p) for p in spot_positions]
         if currency:
             balances = [b for b in balances if b.currency == currency]
         return balances
@@ -688,6 +734,33 @@ class CoinbaseClient(IExchange):
         return AccountBalance(
             currency=currency,
             total=available + frozen,
+            available=available,
+            frozen=frozen,
+        )
+
+    @staticmethod
+    def _parse_spot_position(position: Any) -> AccountBalance:
+        """Parse a Coinbase portfolio spot position into an AccountBalance.
+
+        Works with both dict and object responses — the SDK returns the
+        breakdown's spot_positions as a list of dicts in some versions.
+        """
+        def _get(obj: Any, key: str, default: Any = '0') -> Any:
+            if isinstance(obj, dict):
+                return obj.get(key, default)
+            return getattr(obj, key, default)
+
+        currency = str(_get(position, 'asset', ''))
+        total_crypto = _get(position, 'total_balance_crypto', '0')
+        available_crypto = _get(position, 'available_to_trade_crypto', total_crypto)
+
+        total = Decimal(str(total_crypto or '0'))
+        available = Decimal(str(available_crypto or '0'))
+        frozen = max(Decimal('0'), total - available)
+
+        return AccountBalance(
+            currency=currency,
+            total=total,
             available=available,
             frozen=frozen,
         )

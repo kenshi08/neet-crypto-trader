@@ -190,51 +190,71 @@ class TestCoinbaseClientWithMockedSDK:
         assert call_kwargs['product_id'] == 'BTC-USD'
         assert call_kwargs['granularity'] == 'FIFTEEN_MINUTE'
 
+    def _mock_portfolio_and_breakdown(self, client, spot_positions):
+        """Helper: mock the portfolio UUID resolution + breakdown response."""
+        client._session.get_portfolios.return_value = SimpleNamespace(
+            portfolios=[
+                SimpleNamespace(
+                    uuid='default-uuid-123',
+                    type='DEFAULT',
+                    name='Default',
+                ),
+            ],
+        )
+        client._session.get_portfolio_breakdown.return_value = SimpleNamespace(
+            breakdown={'spot_positions': spot_positions},
+        )
+
     async def test_get_balance(self):
         client = self._mock_client()
-        client._session.get_accounts.return_value = SimpleNamespace(
-            accounts=[
-                SimpleNamespace(
-                    currency='USD',
-                    available_balance=SimpleNamespace(value='10000', currency='USD'),
-                    hold=SimpleNamespace(value='500', currency='USD'),
-                ),
-                SimpleNamespace(
-                    currency='BTC',
-                    available_balance=SimpleNamespace(value='0.5', currency='BTC'),
-                    hold=SimpleNamespace(value='0', currency='BTC'),
-                ),
+        self._mock_portfolio_and_breakdown(
+            client,
+            spot_positions=[
+                {
+                    'asset': 'USDC',
+                    'total_balance_crypto': 396.53,
+                    'available_to_trade_crypto': 396.53,
+                },
+                {
+                    'asset': 'BTC',
+                    'total_balance_crypto': 0.5,
+                    'available_to_trade_crypto': 0.4,
+                },
             ],
         )
 
         balances = await client.get_balance()
 
         assert len(balances) == 2
-        usd = next(b for b in balances if b.currency == 'USD')
-        assert usd.available == Decimal('10000')
-        assert usd.frozen == Decimal('500')
-        assert usd.total == Decimal('10500')
+        usdc = next(b for b in balances if b.currency == 'USDC')
+        assert usdc.available == Decimal('396.53')
+        assert usdc.total == Decimal('396.53')
+        btc = next(b for b in balances if b.currency == 'BTC')
+        assert btc.available == Decimal('0.4')
+        assert btc.total == Decimal('0.5')
+        assert btc.frozen == Decimal('0.1')
 
     async def test_get_balance_filtered(self):
         client = self._mock_client()
-        client._session.get_accounts.return_value = SimpleNamespace(
-            accounts=[
-                SimpleNamespace(
-                    currency='USD',
-                    available_balance=SimpleNamespace(value='10000', currency='USD'),
-                    hold=SimpleNamespace(value='0', currency='USD'),
-                ),
-                SimpleNamespace(
-                    currency='BTC',
-                    available_balance=SimpleNamespace(value='0.5', currency='BTC'),
-                    hold=SimpleNamespace(value='0', currency='BTC'),
-                ),
+        self._mock_portfolio_and_breakdown(
+            client,
+            spot_positions=[
+                {
+                    'asset': 'USDC',
+                    'total_balance_crypto': 396.53,
+                    'available_to_trade_crypto': 396.53,
+                },
+                {
+                    'asset': 'BTC',
+                    'total_balance_crypto': 0.5,
+                    'available_to_trade_crypto': 0.5,
+                },
             ],
         )
 
-        balances = await client.get_balance('USD')
+        balances = await client.get_balance('USDC')
         assert len(balances) == 1
-        assert balances[0].currency == 'USD'
+        assert balances[0].currency == 'USDC'
 
     async def test_place_market_order(self):
         client = self._mock_client()
@@ -297,13 +317,14 @@ class TestCoinbaseClientWithMockedSDK:
 
     async def test_validate_connection_success(self):
         client = self._mock_client()
-        client._session.get_accounts.return_value = SimpleNamespace(
-            accounts=[
-                SimpleNamespace(
-                    currency='USD',
-                    available_balance=SimpleNamespace(value='1000', currency='USD'),
-                    hold=SimpleNamespace(value='0', currency='USD'),
-                ),
+        self._mock_portfolio_and_breakdown(
+            client,
+            spot_positions=[
+                {
+                    'asset': 'USDC',
+                    'total_balance_crypto': 1000,
+                    'available_to_trade_crypto': 1000,
+                },
             ],
         )
 
