@@ -13,7 +13,8 @@ from dotenv import load_dotenv
 from nct.config import AppConfig, load_config
 from nct.db import Database, get_db_path
 from nct.exceptions import ExchangeError
-from nct.exchange.client import OKXClient
+from nct.exchange.base import IExchange
+from nct.exchange.factory import create_exchange_client
 from nct.exchange.market_feed import MarketFeed
 from nct.executor import OrderExecutor
 from nct.logging_setup import setup_logging
@@ -57,7 +58,7 @@ class TradingAgent:
         self._state = AgentState.STARTING
 
         # Components (initialized in initialize())
-        self._client: OKXClient | None = None
+        self._client: IExchange | None = None
         self._db: Database | None = None
         self._market_feed: MarketFeed | None = None
         self._data_provider: DataProvider | None = None
@@ -72,24 +73,35 @@ class TradingAgent:
 
     async def initialize(self) -> bool:
         """Initialize all components. Returns True if successful."""
-        log.info('agent_initializing', demo_mode=self._config.okx.demo_mode)
+        # Determine active exchange credentials based on config.exchange
+        active_creds = (
+            self._config.bybit
+            if self._config.exchange == 'bybit'
+            else self._config.okx
+        )
 
-        # 1. Exchange client
-        self._client = OKXClient(self._config.okx)
+        log.info(
+            'agent_initializing',
+            exchange=self._config.exchange,
+            demo_mode=active_creds.demo_mode,
+        )
+
+        # 1. Exchange client (via factory)
+        self._client = create_exchange_client(self._config)
 
         # 2. Validate connection (if API key provided)
-        if self._config.okx.api_key:
+        if active_creds.api_key:
             connected = await self._client.validate_connection()
             if not connected:
                 log.warning(
                     'startup_no_connection',
-                    msg='Could not validate OKX connection — will retry in trading loop',
+                    msg='Could not validate exchange connection — will retry in trading loop',
                 )
         else:
             log.warning('no_api_key', msg='Running without API key — dry-run only')
 
         # 3. Database
-        db_path = get_db_path(is_dry_run=self._config.okx.demo_mode)
+        db_path = get_db_path(is_dry_run=active_creds.demo_mode)
         self._db = Database(db_path)
         await self._db.connect()
 
@@ -144,11 +156,13 @@ class TradingAgent:
             self._client, cache_ttl_seconds=self._config.trading.poll_interval_seconds,
         )
 
-        # 12. Market feed (WebSocket)
-        self._market_feed = MarketFeed(
-            self._config.trading.pairs,
-            demo_mode=self._config.okx.demo_mode,
-        )
+        # 12. Market feed (WebSocket) — currently OKX-only.
+        # For Bybit, we fall back to REST polling via DataProvider.
+        if self._config.exchange == 'okx':
+            self._market_feed = MarketFeed(
+                self._config.trading.pairs,
+                demo_mode=active_creds.demo_mode,
+            )
 
         # 13. Telegram notifier (optional)
         if self._config.telegram.enabled:
@@ -174,11 +188,12 @@ class TradingAgent:
 
         log.info('agent_running', poll_interval=self._config.trading.poll_interval_seconds)
 
-        # Start WebSocket feed in background
-        try:
-            await self._market_feed.start()
-        except Exception:
-            log.warning('ws_feed_start_failed', msg='Falling back to REST polling')
+        # Start WebSocket feed in background (if available)
+        if self._market_feed:
+            try:
+                await self._market_feed.start()
+            except Exception:
+                log.warning('ws_feed_start_failed', msg='Falling back to REST polling')
 
         # Start Telegram bot
         if self._notifier and self._notifier.enabled:

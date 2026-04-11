@@ -158,8 +158,17 @@ class TelegramConfig(BaseSettings):
 # ---------------------------------------------------------------------------
 # Top-level application config
 # ---------------------------------------------------------------------------
+class _ExchangeSelector(BaseSettings):
+    """Reads the EXCHANGE env var to choose which exchange to use."""
+    model_config = SettingsConfigDict(env_prefix='')
+
+    exchange: Literal['okx', 'bybit'] = 'okx'
+
+
 class AppConfig(BaseModel):
+    exchange: Literal['okx', 'bybit'] = 'okx'
     okx: OKXCredentials = Field(default_factory=OKXCredentials)
+    bybit: BybitCredentials = Field(default_factory=BybitCredentials)
     trading: TradingConfig = Field(default_factory=TradingConfig)
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
     risk: RiskConfig = Field(default_factory=RiskConfig)
@@ -186,7 +195,9 @@ def load_config(config_path: Path | None = None) -> AppConfig:
         log.warning('config_file_not_found', path=str(path), using='defaults')
 
     okx = OKXCredentials()
+    bybit = BybitCredentials()
     telegram = TelegramConfig()
+    exchange_selector = _ExchangeSelector()
 
     trading = TradingConfig(**toml_data.get('trading', {}))
     budget = BudgetConfig(**toml_data.get('budget', {}))
@@ -195,17 +206,22 @@ def load_config(config_path: Path | None = None) -> AppConfig:
     strategy_params = toml_data.get('strategy', {}).get(trading.strategy, {})
 
     config = AppConfig(
-        okx=okx, trading=trading, budget=budget, risk=risk,
+        exchange=exchange_selector.exchange,
+        okx=okx, bybit=bybit,
+        trading=trading, budget=budget, risk=risk,
         telegram=telegram, strategy_params=strategy_params,
     )
 
+    active_creds = config.bybit if config.exchange == 'bybit' else config.okx
+
     log.info(
         'config_summary',
-        demo_mode=config.okx.demo_mode,
+        exchange=config.exchange,
+        demo_mode=active_creds.demo_mode,
         pairs=config.trading.pairs,
         budget_period=config.budget.period,
         budget_amount=str(config.budget.amount_usdt),
-        has_api_key=bool(config.okx.api_key),
+        has_api_key=bool(active_creds.api_key),
     )
 
     return config

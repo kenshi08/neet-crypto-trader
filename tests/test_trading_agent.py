@@ -50,7 +50,7 @@ class TestAgentState:
 
 class TestAgentInitialize:
     @patch('nct.main.Database')
-    @patch('nct.main.OKXClient')
+    @patch('nct.main.create_exchange_client')
     async def test_initializes_all_components(
         self, mock_client_cls, mock_db_cls, tmp_path: Path,
     ):
@@ -77,7 +77,7 @@ class TestAgentInitialize:
         assert agent.state == AgentState.RUNNING
 
     @patch('nct.main.Database')
-    @patch('nct.main.OKXClient')
+    @patch('nct.main.create_exchange_client')
     async def test_continues_on_failed_validation(
         self, mock_client_cls, mock_db_cls, tmp_path: Path,
     ):
@@ -106,7 +106,7 @@ class TestAgentInitialize:
 
 class TestAgentShutdown:
     @patch('nct.main.Database')
-    @patch('nct.main.OKXClient')
+    @patch('nct.main.create_exchange_client')
     async def test_graceful_shutdown(
         self, mock_client_cls, mock_db_cls, tmp_path: Path,
     ):
@@ -136,7 +136,7 @@ class TestAgentShutdown:
         mock_client.cancel_all_orders.assert_awaited_once()
 
     @patch('nct.main.Database')
-    @patch('nct.main.OKXClient')
+    @patch('nct.main.create_exchange_client')
     async def test_double_shutdown_is_safe(
         self, mock_client_cls, mock_db_cls, tmp_path: Path,
     ):
@@ -169,7 +169,7 @@ class TestAgentShutdown:
 
 class TestKillSwitch:
     @patch('nct.main.Database')
-    @patch('nct.main.OKXClient')
+    @patch('nct.main.create_exchange_client')
     async def test_kill_switch_stops_agent(
         self, mock_client_cls, mock_db_cls, tmp_path: Path,
     ):
