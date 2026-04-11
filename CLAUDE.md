@@ -2,14 +2,14 @@
 
 ## Project Overview
 
-A crypto trading agent for OKX that automates short-term speculative trading with strict budget controls (weekly/monthly limits on losses and gains). Designed for a single user managing a personal trading budget.
+A multi-exchange crypto trading agent that automates short-term speculative trading with strict budget controls (weekly/monthly limits on losses and gains). Designed for a single user managing a personal trading budget. Primary deployment target is **Coinbase Advanced Trade** (Singapore-accessible); OKX and Bybit are supported as alternative backends.
 
 ## Tech Stack
 
 - **Python 3.11+**
+- **coinbase-advanced-py** — Official Coinbase SDK (Advanced Trade API) — primary
 - **python-okx** — Official OKX SDK (REST + WebSocket)
 - **pybit** — Official Bybit SDK (V5 unified trading API)
-- **coinbase-advanced-py** — Official Coinbase SDK (Advanced Trade API)
 - **pandas + ta** — OHLCV data + technical indicators (ta library; pandas-ta requires 3.12+)
 - **Pydantic v2 + pydantic-settings** — Config validation, hot-reloadable fields
 - **aiosqlite** — SQLite persistence for budget tracking, trade history
@@ -23,25 +23,27 @@ A crypto trading agent for OKX that automates short-term speculative trading wit
 ```
 Config (TOML + .env, EXCHANGE selector, Pydantic validated)
         |
-Exchange Factory → IExchange (OKXClient | BybitClient)
+Exchange Factory → IExchange (CoinbaseClient | OKXClient | BybitClient)
         |  (@retrier decorator, dry-run branch, server-side SL/TP)
 Strategy Engine (IStrategy ABC, plugin loading, pandas-ta indicators)
         |  SignalResult
 Risk Manager (BudgetManager + PositionSizer + ProtectionManager)
         |  TradeDecision (approved, size, SL, TP, time_limit)
-Executor (place order + algo stop-loss on OKX, track lifecycle, report P&L)
+Executor (place order + server-side SL/TP, track lifecycle, report P&L)
 ```
 
 ### Key Design Principles (from competitive analysis)
 
 These are drawn from analyzing Freqtrade (48.5k stars), Hummingbot (18k stars), and TradingAgents (49k stars):
 
-1. **Triple Barrier on every position** — Stop-loss + take-profit + time-limit. Server-side stop-loss via OKX algo orders (executes even if bot crashes). Non-negotiable.
-2. **Dry-run at the exchange layer** — `create_order()` branches to simulation or real execution. Uses real orderbook for slippage simulation. Separate SQLite DB for paper trades.
+1. **Triple Barrier on every position** — Stop-loss + take-profit + time-limit. Server-side stop-loss via exchange algo/stop-limit orders (executes even if bot crashes). Non-negotiable. Atomic: if SL/TP placement fails, the entry is reversed (#36).
+2. **Dry-run at the exchange layer** — `create_order()` branches to simulation or real execution. Separate SQLite DB for paper trades.
 3. **Strategy-as-plugin** — Abstract `IStrategy` base class. Strategies are selected via `config.trading.strategy` and instantiated by `create_strategy()` in `src/nct/strategy/factory.py`. Same code runs in backtest and live. To add a new strategy: subclass `IStrategy`, register in `_STRATEGY_REGISTRY`, add params section to TOML.
 4. **Hard risk rules first, LLM second** — Budget limits, position sizing, drawdown thresholds are hard-coded rules. LLM interpretation is an optional enhancement layer, never the only safeguard.
-5. **Retry with backoff on every exchange call** — `@retrier` decorator with exponential backoff (1, 4, 9, 16s). OKX has strict rate limits.
+5. **Retry with backoff on every exchange call** — `@retrier` decorator with exponential backoff (1, 4, 9, 16s). All supported exchanges have rate limits.
 6. **Credential isolation** — Copy API keys to exchange config, scrub from main config dict to prevent accidental logging.
+7. **Mode is unmistakable** — `RunningMode` announced at startup resolves to exactly one of `PAPER_DRY_RUN`, `DEMO_REAL_BALANCE`, or `LIVE_REAL_MONEY` (#39).
+8. **Backtests model fees AND slippage** — `run_backtest()` defaults to 0.4% per side (Coinbase taker) and 0.05% slippage per market order. Stop-losses model gap-through — a candle that opens below the stop fills at the open, not the trigger (#38, execution realism).
 
 ## Project Structure
 
@@ -51,53 +53,72 @@ neet-crypto-trader/
 ├── pyproject.toml                  # Dependencies, scripts, tool config
 ├── Dockerfile
 ├── docker-compose.yml
-├── .env.example                    # Template: OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE
+├── .env.example                    # Template: COINBASE_*, BYBIT_*, OKX_*, EXCHANGE selector
 ├── config/
 │   └── default.toml                # Trading config (budget, pairs, strategy, risk)
 ├── src/
 │   └── nct/                        # Main package
 │       ├── __init__.py
 │       ├── main.py                 # TradingAgent orchestrator, entry point
-│       ├── config.py               # Pydantic settings (OKXCredentials, BudgetConfig, TradingConfig)
+│       ├── config.py               # Pydantic settings (credentials, budget, trading)
+│       ├── runtime_mode.py         # PAPER/DEMO/LIVE mode detection (#39)
 │       ├── exchange/
 │       │   ├── __init__.py
-│       │   ├── client.py           # OKXClient — wraps python-okx, @retrier, dry-run branch
-│       │   ├── market_feed.py      # WebSocket real-time price stream (WsPublicAsync)
+│       │   ├── base.py             # IExchange ABC
+│       │   ├── factory.py          # create_exchange_client() — picks backend from config
+│       │   ├── coinbase_client.py  # CoinbaseClient — primary, via coinbase-advanced-py
+│       │   ├── bybit_client.py     # BybitClient — via pybit V5 unified
+│       │   ├── client.py           # OKXClient — via python-okx
+│       │   ├── market_feed.py      # WebSocket real-time price stream (OKX only)
 │       │   └── models.py           # Ticker, OrderRequest, OrderResponse, Position dataclasses
 │       ├── strategy/
 │       │   ├── __init__.py
-│       │   ├── base.py             # IStrategy ABC: populate_indicators, populate_entry/exit_trend
-│       │   ├── signals.py          # Signal enum (BUY/SELL/HOLD), SignalResult dataclass
-│       │   └── momentum.py         # RSI + MACD momentum strategy
+│       │   ├── base.py             # IStrategy ABC
+│       │   ├── factory.py          # create_strategy() + _STRATEGY_REGISTRY (#37)
+│       │   ├── signals.py          # Signal enum + SignalResult
+│       │   ├── momentum.py         # RSI + MACD
+│       │   ├── mean_reversion.py   # Bollinger Bands + volume
+│       │   └── data_provider.py    # OHLCV fetching, caching, DataFrame conversion
 │       ├── risk/
 │       │   ├── __init__.py
-│       │   ├── budget_manager.py   # Weekly/monthly budget tracking, loss/gain limits (SQLite-backed)
-│       │   ├── position_sizer.py   # Per-trade sizing: (balance * risk%) / stop_distance
+│       │   ├── budget_manager.py   # Weekly/monthly budget tracking (SQLite-backed)
+│       │   ├── position_sizer.py   # Per-trade sizing
 │       │   ├── risk_manager.py     # Central gate — every trade passes through
 │       │   └── protections.py      # StoplossGuard, MaxDrawdown, CooldownPeriod
 │       ├── portfolio/
 │       │   ├── __init__.py
-│       │   └── tracker.py          # Open positions, P&L, sync with OKX
+│       │   └── tracker.py          # Open positions, P&L, persists to DB
+│       ├── executor.py             # OrderExecutor with atomic SL/TP (#36)
+│       ├── notifier.py             # Telegram bot (optional)
+│       ├── logging_setup.py        # structlog JSON config + rotation
 │       └── db.py                   # SQLite schema, migrations, persistence helpers
-├── tests/
-│   ├── conftest.py
-│   ├── test_budget_manager.py
-│   ├── test_position_sizer.py
-│   ├── test_risk_manager.py
-│   ├── test_strategy_momentum.py
-│   └── test_exchange_client.py
+├── tests/                          # pytest + pytest-asyncio, 300+ tests
 └── scripts/
-    └── backtest.py                 # Historical backtest runner
+    └── backtest.py                 # Historical backtest runner (fee + slippage aware)
 ```
 
 ## Configuration
 
-**Credentials** — `.env` file only, never in TOML or committed to git:
+**Credentials** — `.env` file only, never in TOML or committed to git. Pick one exchange via the `EXCHANGE` env var:
 ```
+# Coinbase (primary — Singapore-accessible)
+EXCHANGE=coinbase
+COINBASE_API_KEY=organizations/xxx/apiKeys/yyy
+COINBASE_API_SECRET="-----BEGIN EC PRIVATE KEY-----\n...\n-----END EC PRIVATE KEY-----\n"
+COINBASE_DEMO_MODE=true
+
+# OKX
+EXCHANGE=okx
 OKX_API_KEY=your-key
 OKX_API_SECRET=your-secret
 OKX_PASSPHRASE=your-passphrase
 OKX_DEMO_MODE=true
+
+# Bybit (geo-blocked in Singapore)
+EXCHANGE=bybit
+BYBIT_API_KEY=your-key
+BYBIT_API_SECRET=your-secret
+BYBIT_DEMO_MODE=true
 ```
 
 **Trading config** — `config/default.toml`:
@@ -540,7 +561,7 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. **Updat
 
 ## Exchange-Specific Notes
 
-### Coinbase (recommended for Singapore)
+### Coinbase (primary — recommended, Singapore-accessible)
 
 - **Availability**: Accessible from Singapore (Bybit and some others are geo-blocked).
 - **API**: Coinbase Advanced Trade API via `coinbase-advanced-py` SDK. Uses CDP (Coinbase Developer Platform) API keys.
@@ -554,7 +575,7 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. **Updat
 - **No positions API**: Spot only. `get_positions()` returns an empty list.
 - **Account type**: Simple per-currency account list via `get_accounts`.
 
-### Bybit (recommended)
+### Bybit (alternative — geo-blocked in Singapore)
 
 - **Testnet**: `testnet.bybit.com` — completely separate environment from production. Set `BYBIT_DEMO_MODE=true` to use it. The `pybit` SDK switches automatically via the `testnet=True` constructor flag.
 - **Testnet funds**: Request via testnet UI — instantly credited (no maintenance windows).

@@ -19,8 +19,9 @@ Budget-controlled crypto trading agent supporting **Coinbase**, **OKX**, and **B
 
 - Python 3.11+
 - One of:
-  - **Bybit** account ([live](https://www.bybit.com) or [testnet](https://testnet.bybit.com)) — recommended
+  - **Coinbase** account — primary, accessible from Singapore ([create CDP API key](https://portal.cdp.coinbase.com/projects/api-keys))
   - **OKX** account ([create here](https://www.okx.com/account/my-api))
+  - **Bybit** account ([live](https://www.bybit.com) or [testnet](https://testnet.bybit.com) — geo-blocked in some regions)
 - API key with **Trade** permission only — **never** enable Withdraw
 
 ### Installation
@@ -34,10 +35,10 @@ pip install -e ".[dev]"
 
 ### Configuration
 
-1. Copy the environment template and add your OKX API credentials:
+1. Copy the environment template and add credentials for your chosen exchange:
 ```bash
 cp .env.example .env
-# Edit .env with your API key, secret, and passphrase
+# Edit .env — set EXCHANGE=coinbase|okx|bybit and fill in the matching keys
 ```
 
 2. Review trading config in `config/default.toml` — adjust pairs, budget, and risk parameters.
