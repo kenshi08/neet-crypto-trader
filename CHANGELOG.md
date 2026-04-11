@@ -23,12 +23,19 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `gross_pnl`, and net `pnl`. The report shows gross/fees/net breakdown, and
   the CLI accepts `--fee-pct` or `--exchange {coinbase,okx,bybit,binance}`
   presets. Default is 0.4% per side (Coinbase Advanced Trade taker). (#38)
+- **Running mode is now unambiguous** — Logs and Telegram previously mixed
+  paper, demo, and live indicators together, making it easy to forget which
+  mode was active. The bot now emits a single `running_mode` log line at
+  startup with one of `PAPER_DRY_RUN`, `DEMO_REAL_BALANCE`, or
+  `LIVE_REAL_MONEY`, and sends a matching Telegram message. Live mode is
+  visually distinct (bold, warning text). (#39)
 
 ### Added
 - Strategy factory pattern with `create_strategy()` and `list_strategies()` (#37)
 - Backtest fee model with per-side fee configuration and exchange presets (#38)
-- 6 new backtest tests covering fee calculation, zero-fee parity, and
-  higher-fee-reduces-net-pnl invariants (286 total)
+- `src/nct/runtime_mode.py` — `RunningMode` enum, `detect_mode()`, and
+  `describe()` with mode-specific log warnings and Telegram messages (#39)
+- 16 new tests covering fee model and runtime mode detection (296 total)
 - `config/default.toml` now includes both `[strategy.momentum]` and
   `[strategy.mean_reversion]` sections with documented parameters
 - README documents how to switch strategies via config

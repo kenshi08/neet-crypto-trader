@@ -29,6 +29,7 @@ from nct.risk.protections import (
     StoplossGuard,
 )
 from nct.risk.risk_manager import RiskManager
+from nct.runtime_mode import RunningMode, describe, detect_mode
 from nct.strategy.base import IStrategy, Signal
 from nct.strategy.data_provider import DataProvider
 from nct.strategy.factory import create_strategy
@@ -56,6 +57,7 @@ class TradingAgent:
     def __init__(self, config: AppConfig) -> None:
         self._config = config
         self._state = AgentState.STARTING
+        self._running_mode: RunningMode | None = None
 
         # Components (initialized in initialize())
         self._client: IExchange | None = None
@@ -81,6 +83,23 @@ class TradingAgent:
         }
         active_creds = _creds_map[self._config.exchange]
 
+        # Detect and announce the running mode — this is the single source of
+        # truth for "what kind of session is this?" and must be unambiguous
+        # in both logs and Telegram. See #39.
+        self._running_mode = detect_mode(
+            has_api_key=bool(active_creds.api_key),
+            demo_mode=active_creds.demo_mode,
+        )
+        mode_desc = describe(self._running_mode)
+        log.warning(
+            'running_mode',
+            mode=self._running_mode.value,
+            exchange=self._config.exchange,
+            demo_mode=active_creds.demo_mode,
+            has_api_key=bool(active_creds.api_key),
+            warning=mode_desc.log_warning,
+        )
+
         log.info(
             'agent_initializing',
             exchange=self._config.exchange,
@@ -98,8 +117,6 @@ class TradingAgent:
                     'startup_no_connection',
                     msg='Could not validate exchange connection — will retry in trading loop',
                 )
-        else:
-            log.warning('no_api_key', msg='Running without API key — dry-run only')
 
         # 3. Database
         db_path = get_db_path(is_dry_run=active_creds.demo_mode)
@@ -204,7 +221,11 @@ class TradingAgent:
             try:
                 await self._notifier.start()
                 pairs = ', '.join(self._config.trading.pairs)
-                await self._notifier.send(f'Bot started. Watching: {pairs}')
+                mode_desc = describe(self._running_mode) if self._running_mode else None
+                header = mode_desc.telegram_message if mode_desc else 'Bot started.'
+                await self._notifier.send(
+                    f'{header}\nExchange: `{self._config.exchange}`\nWatching: {pairs}'
+                )
             except Exception:
                 log.exception('telegram_start_failed')
 
