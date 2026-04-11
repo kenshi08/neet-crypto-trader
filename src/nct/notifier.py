@@ -205,19 +205,30 @@ class TelegramNotifier:
             return
 
         try:
-            balances = await self._agent._client.get_balance('USDT')
-            if balances:
-                b = balances[0]
-                msg = (
-                    f'*Balance*\n'
-                    f'Total: `{b.total} {b.currency}`\n'
-                    f'Available: `{b.available} {b.currency}`\n'
-                    f'Frozen: `{b.frozen} {b.currency}`'
-                )
+            # Fetch all balances (no currency filter) so we work with any exchange
+            balances = await self._agent._client.get_balance()
+            # Show balances with non-zero amounts, prioritizing fiat/stablecoins
+            priority = ('USD', 'USDT', 'USDC', 'SGD', 'EUR', 'GBP')
+            non_zero = [b for b in balances if b.total > 0]
+
+            if non_zero:
+                # Sort: fiat first, then by total descending
+                def _sort_key(b):
+                    pri_idx = priority.index(b.currency) if b.currency in priority else 999
+                    return (pri_idx, -float(b.total))
+
+                non_zero.sort(key=_sort_key)
+
+                lines = ['*Balance*']
+                for b in non_zero[:8]:  # Show up to 8 currencies
+                    lines.append(
+                        f'`{b.currency}`: total=`{b.total}` avail=`{b.available}`'
+                    )
+                msg = '\n'.join(lines)
             else:
-                msg = 'No balance data available.'
-        except Exception:
-            msg = 'Failed to fetch balance.'
+                msg = 'No balances found (all zero).'
+        except Exception as e:
+            msg = f'Failed to fetch balance: {str(e)[:100]}'
 
         await update.message.reply_text(msg, parse_mode='Markdown')
 
