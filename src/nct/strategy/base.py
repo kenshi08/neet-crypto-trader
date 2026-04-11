@@ -100,13 +100,17 @@ class IStrategy(ABC):
     def _extract_signal(
         self, dataframe: pd.DataFrame, metadata: dict[str, Any],
     ) -> SignalResult:
-        """Extract signal from the last row of the processed dataframe."""
+        """Extract entry signal from the last row of the processed dataframe.
+
+        Only enter_long / enter_short produce BUY/SELL signals here.
+        Exit signals (exit_long / exit_short) are for closing existing
+        positions and are handled by the triple barrier (SL/TP/time-limit),
+        not by emitting new entry signals.
+        """
         last = dataframe.iloc[-1]
 
         enter_long = bool(last.get('enter_long', 0))
         enter_short = bool(last.get('enter_short', 0))
-        exit_long = bool(last.get('exit_long', 0))
-        exit_short = bool(last.get('exit_short', 0))
 
         confidence = float(last.get('signal_confidence', 0.5))
         reason = str(last.get('signal_reason', ''))
@@ -135,14 +139,6 @@ class IStrategy(ABC):
                 signal=Signal.SELL,
                 confidence=confidence,
                 reason=reason or 'Short entry signal',
-                suggested_stop_loss_pct=sl_pct,
-                suggested_take_profit_pct=tp_pct,
-            )
-        if exit_long or exit_short:
-            return SignalResult(
-                signal=Signal.SELL if exit_long else Signal.BUY,
-                confidence=confidence,
-                reason=reason or 'Exit signal',
                 suggested_stop_loss_pct=sl_pct,
                 suggested_take_profit_pct=tp_pct,
             )
