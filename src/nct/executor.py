@@ -6,7 +6,7 @@ from decimal import Decimal
 
 import structlog
 
-from nct.exchange.client import OKXClient
+from nct.exchange.base import IExchange
 from nct.exchange.models import OrderRequest, OrderType, Side, TdMode
 from nct.portfolio.tracker import PortfolioTracker, TrackedTrade
 from nct.risk.budget_manager import BudgetManager
@@ -21,8 +21,8 @@ class OrderExecutor:
 
     For every trade:
     1. Place market order
-    2. Place server-side stop-loss (OKX algo order)
-    3. Place server-side take-profit (OKX algo order)
+    2. Place server-side stop-loss (exchange algo order)
+    3. Place server-side take-profit (exchange algo order)
     4. Track time limit in PortfolioTracker
 
     Safety invariant: no order is placed without a server-side stop-loss.
@@ -31,7 +31,7 @@ class OrderExecutor:
     def __init__(
         self,
         *,
-        client: OKXClient,
+        client: IExchange,
         portfolio: PortfolioTracker,
         budget_manager: BudgetManager,
         protection_manager: ProtectionManager,

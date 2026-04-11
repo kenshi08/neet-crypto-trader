@@ -9,7 +9,7 @@ from decimal import Decimal
 import structlog
 
 from nct.db import Database
-from nct.exchange.client import OKXClient
+from nct.exchange.base import IExchange
 from nct.exchange.models import Position
 
 log = structlog.get_logger()
@@ -46,7 +46,7 @@ class PortfolioTracker:
     Persists trade history to SQLite.
     """
 
-    def __init__(self, client: OKXClient, db: Database) -> None:
+    def __init__(self, client: IExchange, db: Database) -> None:
         self._client = client
         self._db = db
         self._open_trades: dict[str, TrackedTrade] = {}  # keyed by inst_id

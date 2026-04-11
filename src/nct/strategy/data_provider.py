@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 import pandas as pd
 import structlog
 
-from nct.exchange.client import OKXClient
+from nct.exchange.base import IExchange
 from nct.exchange.models import Candle
 
 log = structlog.get_logger()
@@ -23,7 +23,7 @@ class DataProvider:
     - Detects new candle close to trigger strategy re-evaluation
     """
 
-    def __init__(self, client: OKXClient, *, cache_ttl_seconds: int = 5) -> None:
+    def __init__(self, client: IExchange, *, cache_ttl_seconds: int = 5) -> None:
         self._client = client
         self._cache_ttl = cache_ttl_seconds
         self._cache: dict[str, _CacheEntry] = {}

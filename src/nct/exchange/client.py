@@ -18,6 +18,7 @@ from nct.exceptions import (
     OrderError,
     RateLimitError,
 )
+from nct.exchange.base import IExchange
 from nct.exchange.models import (
     AccountBalance,
     Candle,
@@ -91,8 +92,8 @@ def retrier(func):
 # ---------------------------------------------------------------------------
 
 
-class OKXClient:
-    """Unified async interface to OKX REST API.
+class OKXClient(IExchange):
+    """OKX implementation of IExchange.
 
     Supports both live and demo (paper) trading modes. All exchange calls
     are wrapped with retry logic and rate limiting.

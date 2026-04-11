@@ -1,5 +1,6 @@
-"""OKX exchange integration — client, market feed, and data models."""
+"""Exchange integration — abstract interface and concrete clients."""
 
+from nct.exchange.base import IExchange
 from nct.exchange.client import OKXClient
 from nct.exchange.models import (
     Candle,
@@ -11,6 +12,7 @@ from nct.exchange.models import (
 
 __all__ = [
     "Candle",
+    "IExchange",
     "OKXClient",
     "OrderRequest",
     "OrderResponse",
