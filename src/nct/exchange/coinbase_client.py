@@ -113,9 +113,12 @@ class CoinbaseClient(IExchange):
         from coinbase.rest import RESTClient
 
         if self._credentials.api_key and self._credentials.api_secret:
+            # Normalize the private key: .env files store literal '\n' which
+            # must be converted to actual newlines for PEM parsing.
+            api_secret = self._credentials.api_secret.replace('\\n', '\n')
             self._session = RESTClient(
                 api_key=self._credentials.api_key,
-                api_secret=self._credentials.api_secret,
+                api_secret=api_secret,
             )
         else:
             # Public-only client for market data
