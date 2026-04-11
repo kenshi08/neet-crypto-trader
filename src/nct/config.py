@@ -50,6 +50,17 @@ class OKXCredentials(BaseSettings):
 
 
 # ---------------------------------------------------------------------------
+# Bybit credentials (from .env only)
+# ---------------------------------------------------------------------------
+class BybitCredentials(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix='BYBIT_')
+
+    api_key: str = ''
+    api_secret: str = ''
+    demo_mode: bool = True  # uses testnet.bybit.com when True
+
+
+# ---------------------------------------------------------------------------
 # Trading configuration
 # ---------------------------------------------------------------------------
 class TradingConfig(BaseModel):
