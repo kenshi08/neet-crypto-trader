@@ -1,7 +1,7 @@
 [project]
 name = "neet-crypto-trader"
 version = "0.1.0"
-description = "Crypto trading agent for OKX with budget-controlled short-term speculation"
+description = "Multi-exchange crypto trading agent (Coinbase, OKX, Bybit) with budget-controlled short-term speculation"
 requires-python = ">=3.11"
 dependencies = [
     "python-okx>=0.3,<1",

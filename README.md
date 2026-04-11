@@ -120,33 +120,73 @@ Change `strategy = "momentum"` to `strategy = "mean_reversion"` in your TOML
 config and restart the bot. The strategy factory picks the right implementation
 at startup. Available strategies: `momentum`, `mean_reversion`.
 
+## Exchange Support
+
+Behavior and guarantees differ by venue. Coinbase is the **primary** target
+(what's tested end-to-end for Singapore); OKX and Bybit are alternative
+backends with their own trade-offs.
+
+| Capability              | Coinbase (primary)             | OKX                              | Bybit                          |
+|-------------------------|--------------------------------|----------------------------------|--------------------------------|
+| Singapore access        | Yes                            | Yes (with regional URL)          | Geo-blocked                    |
+| Server-side stop-loss   | `stop_limit_order_gtc_*`       | Algo orders (`conditional`)      | V5 conditional (`triggerPrice`)|
+| Server-side take-profit | `stop_limit_order_gtc_*`       | Algo orders (`conditional`)      | V5 conditional                 |
+| Atomic SL/TP reversal   | Yes (#36)                      | Yes (#36)                        | Yes (#36)                      |
+| Demo / sandbox          | Local dry-run (no public SB)   | OKX demo (`flag=1`)              | Testnet (`testnet.bybit.com`)  |
+| Real balance in demo    | No (dry-run simulates)         | Yes (OKX demo is real balance)   | Yes (testnet coins)            |
+| WebSocket market feed   | REST polling only              | Native WebSocket                 | REST polling only              |
+| Typical taker fee       | ~0.4%                          | ~0.1%                            | ~0.1%                          |
+| Quote currency          | USD / USDC                     | USDT                             | USDT                           |
+
+**Notes:**
+
+- **Triple barrier is enforced atomically on all three exchanges** — if
+  stop-loss or take-profit placement fails after entry, `OrderExecutor`
+  reverses the entry with a market order in the opposite direction (#36).
+  This guarantee is exchange-agnostic.
+- **Coinbase demo is local dry-run only**. Advanced Trade has no public
+  sandbox, so orders are simulated in-process; public market data always
+  uses the live endpoint so price action is real. Use `COINBASE_DEMO_MODE=true`.
+- **OKX demo keys are separate from live keys** — they must be created while
+  in "Demo Trading" mode on the OKX website, and only work against the demo
+  environment (`flag=1`).
+- **Market feed limitation**: only OKX has a WebSocket feed wired up;
+  Coinbase and Bybit fall back to REST polling via `DataProvider`. This is
+  fine for 15m timeframes but would matter at 1m or below.
+
 ## Project Structure
 
 ```
 src/nct/
-  config.py           # Pydantic config (TOML + .env)
-  exceptions.py       # Exception hierarchy
-  db.py               # SQLite persistence
-  main.py             # Entry point / orchestrator
+  config.py            # Pydantic config (TOML + .env)
+  exceptions.py        # Exception hierarchy
+  runtime_mode.py      # PAPER/DEMO/LIVE mode detection (#39)
+  db.py                # SQLite persistence
+  main.py              # Entry point / orchestrator
   exchange/
-    client.py         # OKX API wrapper (@retrier, rate limiting, dry-run)
-    models.py         # Typed data models (Ticker, Candle, Order, Position)
-    market_feed.py    # WebSocket real-time data
+    base.py            # IExchange ABC
+    factory.py         # create_exchange_client() — picks backend from config
+    coinbase_client.py # Coinbase Advanced Trade (primary)
+    client.py          # OKXClient (python-okx)
+    bybit_client.py    # BybitClient (pybit V5)
+    market_feed.py     # OKX WebSocket real-time data
+    models.py          # Typed data models (Ticker, Candle, Order, Position)
   strategy/
-    base.py           # IStrategy ABC
-    momentum.py       # RSI + MACD strategy
-    mean_reversion.py # Bollinger Bands + volume strategy
-    data_provider.py  # OHLCV fetching, caching, DataFrame conversion
+    base.py            # IStrategy ABC
+    factory.py         # create_strategy() + _STRATEGY_REGISTRY (#37)
+    momentum.py        # RSI + MACD strategy
+    mean_reversion.py  # Bollinger Bands + volume strategy
+    data_provider.py   # OHLCV fetching, caching, DataFrame conversion
   risk/
-    budget_manager.py # Weekly/monthly budget tracking
-    position_sizer.py # Per-trade sizing
-    risk_manager.py   # Central risk gate
-    protections.py    # Circuit breakers (StoplossGuard, MaxDrawdown)
+    budget_manager.py  # Weekly/monthly budget tracking
+    position_sizer.py  # Per-trade sizing
+    risk_manager.py    # Central risk gate
+    protections.py     # Circuit breakers (StoplossGuard, MaxDrawdown)
   portfolio/
-    tracker.py        # Position tracking, P&L
-  executor.py         # Order execution with triple barrier
-  notifier.py         # Telegram bot (optional)
-  logging_setup.py    # Structured logging config
+    tracker.py         # Position tracking, P&L
+  executor.py          # Order execution with atomic triple barrier (#36)
+  notifier.py          # Telegram bot (optional)
+  logging_setup.py     # Structured logging config
 ```
 
 ## Development
