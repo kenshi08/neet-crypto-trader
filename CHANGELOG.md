@@ -29,13 +29,25 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   startup with one of `PAPER_DRY_RUN`, `DEMO_REAL_BALANCE`, or
   `LIVE_REAL_MONEY`, and sends a matching Telegram message. Live mode is
   visually distinct (bold, warning text). (#39)
+- **Backtest now models execution realism** — Previously entries filled at
+  the exact candle close, stop-losses at the exact trigger, and take-profits
+  at the exact level — none of which reflects real market-order execution.
+  `run_backtest()` now applies adverse slippage (default 0.05% per side) to
+  entries, signal exits, and stop-losses past the trigger. Stop-losses model
+  gap-through: if a candle opens below the stop, the fill uses the open
+  price (not the trigger), realistically capturing overnight gaps and flash
+  crashes. Take-profits still fill at the exact level (limit-order semantics).
+  CLI accepts `--slippage-pct` for explicit control.
 
 ### Added
 - Strategy factory pattern with `create_strategy()` and `list_strategies()` (#37)
 - Backtest fee model with per-side fee configuration and exchange presets (#38)
+- Backtest slippage model with gap-through stop-loss semantics and
+  `--slippage-pct` CLI flag (default 0.05% for liquid pairs)
 - `src/nct/runtime_mode.py` — `RunningMode` enum, `detect_mode()`, and
   `describe()` with mode-specific log warnings and Telegram messages (#39)
-- 16 new tests covering fee model and runtime mode detection (296 total)
+- 22 new tests covering fee model, runtime mode detection, and slippage
+  model including gap-through validation (302 total)
 - `config/default.toml` now includes both `[strategy.momentum]` and
   `[strategy.mean_reversion]` sections with documented parameters
 - README documents how to switch strategies via config

@@ -66,7 +66,7 @@ class BacktestResult:
     total_trades: int
     winning_trades: int
     losing_trades: int
-    gross_pnl: float              # total before fees
+    gross_pnl: float              # total before fees (reflects slippage)
     total_fees_paid: float        # sum of entry + exit fees
     total_pnl: float              # net after fees (what you actually earned)
     max_drawdown: float
@@ -76,6 +76,7 @@ class BacktestResult:
     profit_factor: float
     sharpe_ratio: float
     fee_pct: float                # fee rate used for the simulation
+    slippage_pct: float           # adverse slippage per market order
     trades: list[BacktestTrade] = field(default_factory=list)
 
 
@@ -87,6 +88,7 @@ def run_backtest(
     take_profit_pct: float = 5.0,
     position_size_usdt: float = 100.0,
     fee_pct: float = 0.4,  # Coinbase Advanced Trade taker fee by default
+    slippage_pct: float = 0.05,  # Realistic market-order slippage for liquid pairs
 ) -> BacktestResult:
     """Run a backtest on historical OHLCV data.
 
@@ -95,6 +97,15 @@ def run_backtest(
             Coinbase Advanced Trade taker fee. Use 0.1% for OKX/Bybit spot,
             0.075% for Binance with BNB discount, etc. Fees are deducted on
             both entry and exit, so round-trip cost is 2 * fee_pct.
+        slippage_pct: Adverse slippage per side, as a percentage, applied to
+            market orders. Default 0.05% is typical for liquid pairs
+            (BTC/ETH/SOL) on major exchanges. Entries and signal exits are
+            treated as market orders (get worse fills). Stop-losses model
+            gap-through: if a candle opens below the stop, the fill uses the
+            open price (not the trigger), which realistically captures
+            overnight gaps and flash crashes. Take-profits are treated as
+            limit orders and fill at the exact TP price. Set to 0 for an
+            idealized backtest.
     """
     strategy = MomentumStrategy()
 
@@ -110,7 +121,8 @@ def run_backtest(
             total_trades=0, winning_trades=0, losing_trades=0,
             gross_pnl=0, total_fees_paid=0, total_pnl=0,
             max_drawdown=0, win_rate=0, avg_win=0, avg_loss=0,
-            profit_factor=0, sharpe_ratio=0, fee_pct=fee_pct,
+            profit_factor=0, sharpe_ratio=0,
+            fee_pct=fee_pct, slippage_pct=slippage_pct,
         )
 
     # Run strategy on full dataframe
@@ -119,6 +131,7 @@ def run_backtest(
     processed = strategy.populate_exit_trend(processed, {})
 
     fee_rate = fee_pct / 100.0
+    slip_rate = slippage_pct / 100.0
 
     def _finalize(trade: BacktestTrade, exit_idx: int, exit_price: float, reason: str) -> None:
         """Compute gross P&L, entry/exit fees, and net P&L on exit."""
@@ -139,15 +152,24 @@ def run_backtest(
         price = row['close']
 
         if in_position and current_trade:
-            # Check stop-loss
+            # Check stop-loss (market-sell semantics with gap-through modeling)
             if row['low'] <= current_trade.stop_loss:
-                _finalize(current_trade, i, current_trade.stop_loss, 'stop_loss')
+                if row['open'] <= current_trade.stop_loss:
+                    # Gap-through: candle OPENED below SL. The stop fills at
+                    # the open, not the trigger — realistically captures
+                    # overnight gaps and flash crashes that breach the level
+                    # before the order can react.
+                    fill = row['open']
+                else:
+                    # Normal trigger: fill at SL with adverse slippage past it
+                    fill = current_trade.stop_loss * (1 - slip_rate)
+                _finalize(current_trade, i, fill, 'stop_loss')
                 trades.append(current_trade)
                 in_position = False
                 current_trade = None
                 continue
 
-            # Check take-profit
+            # Check take-profit — limit-sell, fills at the exact TP price
             if row['high'] >= current_trade.take_profit:
                 _finalize(current_trade, i, current_trade.take_profit, 'take_profit')
                 trades.append(current_trade)
@@ -155,17 +177,17 @@ def run_backtest(
                 current_trade = None
                 continue
 
-            # Check exit signal
+            # Check exit signal (market-sell — adverse slippage)
             if row.get('exit_long', 0) == 1:
-                _finalize(current_trade, i, price, 'exit_signal')
+                _finalize(current_trade, i, price * (1 - slip_rate), 'exit_signal')
                 trades.append(current_trade)
                 in_position = False
                 current_trade = None
                 continue
 
         elif not in_position and row.get('enter_long', 0) == 1:
-            # Open position
-            entry_price = price
+            # Open position (market-buy — adverse slippage)
+            entry_price = price * (1 + slip_rate)
             size = position_size_usdt / entry_price
             sl_price = entry_price * (1 - stop_loss_pct / 100)
             tp_price = entry_price * (1 + take_profit_pct / 100)
@@ -180,9 +202,9 @@ def run_backtest(
             )
             in_position = True
 
-    # Close any open position at the end
+    # Close any open position at the end (market-sell)
     if in_position and current_trade:
-        last_price = processed.iloc[-1]['close']
+        last_price = processed.iloc[-1]['close'] * (1 - slip_rate)
         _finalize(current_trade, len(processed) - 1, last_price, 'end_of_data')
         trades.append(current_trade)
 
@@ -192,6 +214,7 @@ def run_backtest(
         df=processed,
         strategy_name=strategy_name,
         fee_pct=fee_pct,
+        slippage_pct=slippage_pct,
     )
 
 
@@ -201,6 +224,7 @@ def _calculate_metrics(
     df: pd.DataFrame,
     strategy_name: str,
     fee_pct: float,
+    slippage_pct: float,
 ) -> BacktestResult:
     """Calculate backtest performance metrics."""
     if not trades:
@@ -212,7 +236,8 @@ def _calculate_metrics(
             total_trades=0, winning_trades=0, losing_trades=0,
             gross_pnl=0, total_fees_paid=0, total_pnl=0,
             max_drawdown=0, win_rate=0, avg_win=0, avg_loss=0,
-            profit_factor=0, sharpe_ratio=0, fee_pct=fee_pct,
+            profit_factor=0, sharpe_ratio=0,
+            fee_pct=fee_pct, slippage_pct=slippage_pct,
         )
 
     pnls = [t.pnl for t in trades]  # net P&L (after fees)
@@ -272,6 +297,7 @@ def _calculate_metrics(
         profit_factor=round(gross_profit / gross_loss, 2) if gross_loss > 0 else float('inf'),
         sharpe_ratio=round(sharpe, 2),
         fee_pct=fee_pct,
+        slippage_pct=slippage_pct,
         trades=trades,
     )
 
@@ -286,6 +312,7 @@ def print_report(result: BacktestResult) -> None:
     print(f'  Period:         {result.start_date} → {result.end_date}')
     print(f'  Candles:        {result.total_candles}')
     print(f'  Fee rate:       {result.fee_pct}% per side')
+    print(f'  Slippage:       {result.slippage_pct}% per market order')
     print('-' * 60)
     print(f'  Total Trades:   {result.total_trades}')
     print(f'  Win / Loss:     {result.winning_trades} / {result.losing_trades}')
@@ -352,6 +379,10 @@ async def main() -> None:
         '--exchange', default='coinbase', choices=sorted(_FEE_PRESETS.keys()),
         help='Exchange fee preset (used if --fee-pct not set)',
     )
+    parser.add_argument(
+        '--slippage-pct', type=float, default=0.05,
+        help='Adverse slippage %% per market order (default 0.05)',
+    )
     args = parser.parse_args()
 
     # Resolve fee: explicit --fee-pct wins, otherwise preset
@@ -378,6 +409,7 @@ async def main() -> None:
         take_profit_pct=args.tp,
         position_size_usdt=args.size,
         fee_pct=fee_pct,
+        slippage_pct=args.slippage_pct,
     )
     result.pair = args.pair
     result.timeframe = args.timeframe

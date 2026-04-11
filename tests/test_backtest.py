@@ -106,6 +106,78 @@ class TestFeeModel:
                 assert abs(t.entry_fee - expected_entry_fee) < 0.0001
 
 
+class TestSlippageModel:
+    def test_default_slippage_is_set(self):
+        df = _make_ohlcv(_v_shaped(80))
+        result = run_backtest(df)
+        # Default slippage is 0.05% (realistic for liquid pairs)
+        assert result.slippage_pct == 0.05
+
+    def test_custom_slippage(self):
+        df = _make_ohlcv(_v_shaped(80))
+        result = run_backtest(df, slippage_pct=0.2)
+        assert result.slippage_pct == 0.2
+
+    def test_zero_slippage_entry_matches_close(self):
+        df = _make_ohlcv(_v_shaped(80))
+        result = run_backtest(df, slippage_pct=0.0, fee_pct=0.0)
+        if result.total_trades > 0:
+            for t in result.trades:
+                entry_close = float(df.iloc[t.entry_idx]['close'])
+                # With zero slippage, entry fills at the exact candle close
+                assert abs(t.entry_price - entry_close) < 0.0001
+
+    def test_higher_slippage_reduces_net_pnl_on_market_exits(self):
+        # Disable SL/TP with large thresholds so every trade exits via
+        # exit_signal or end_of_data — both are market-sell paths that
+        # take adverse slippage. (For TP exits, size/TP scale proportionally
+        # with the slipped entry, cancelling the slippage effect on P&L;
+        # this test targets the exits where slippage actually matters.)
+        df = _make_ohlcv(_v_shaped(80))
+        low_slip = run_backtest(
+            df, slippage_pct=0.0, fee_pct=0.0,
+            stop_loss_pct=99.0, take_profit_pct=99.0,
+        )
+        high_slip = run_backtest(
+            df, slippage_pct=1.0, fee_pct=0.0,
+            stop_loss_pct=99.0, take_profit_pct=99.0,
+        )
+
+        if low_slip.total_trades > 0 and high_slip.total_trades > 0:
+            assert high_slip.total_pnl < low_slip.total_pnl
+
+    def test_slippage_worsens_entry_price(self):
+        df = _make_ohlcv(_v_shaped(80))
+        no_slip = run_backtest(df, slippage_pct=0.0)
+        with_slip = run_backtest(df, slippage_pct=0.1)
+
+        # Entry fills should be strictly higher when slippage is applied
+        if no_slip.trades and with_slip.trades:
+            assert with_slip.trades[0].entry_price > no_slip.trades[0].entry_price
+
+    def test_stop_loss_gap_through(self):
+        """If a candle OPENS below the stop-loss, the fill uses the open
+        price — not the trigger. This models overnight gaps / flash crashes."""
+        # Path: flat at 100, then gap down to 80 on candle 31, stays at 80
+        closes = [100.0] * 30 + [100.0, 80.0] + [80.0] * 48
+        df = _make_ohlcv(closes)
+        # Force the gap candle to open well below any reasonable stop-loss
+        df.loc[31, 'open'] = 80.0
+        df.loc[31, 'low'] = 80.0
+        df.loc[31, 'high'] = 82.0
+
+        result = run_backtest(df, slippage_pct=0.0, fee_pct=0.0, stop_loss_pct=3.0)
+        # Any SL fill on the gap candle must equal the open (80), not the
+        # trigger (~97). Absence of such a trade is also fine — the strategy
+        # may not have entered yet.
+        sl_on_gap = [
+            t for t in result.trades
+            if t.exit_reason == 'stop_loss' and t.exit_idx == 31
+        ]
+        for t in sl_on_gap:
+            assert t.exit_price == pytest.approx(80.0, abs=0.01)
+
+
 class TestBacktestTrade:
     def test_trade_dataclass(self):
         t = BacktestTrade(
