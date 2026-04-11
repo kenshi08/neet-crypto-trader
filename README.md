@@ -1,14 +1,15 @@
 # neet-crypto-trader
 
-Budget-controlled crypto trading agent supporting **OKX** and **Bybit**. Automates short-term speculative trading with strict weekly/monthly budget limits on losses and gains.
+Budget-controlled crypto trading agent supporting **Coinbase**, **OKX**, and **Bybit**. Automates short-term speculative trading with strict weekly/monthly budget limits on losses and gains.
 
 ## Features
 
-- **Multi-exchange** — Switch between OKX and Bybit via the `EXCHANGE` env var
+- **Multi-exchange** — Switch between Coinbase, OKX, and Bybit via the `EXCHANGE` env var
 - **Budget Controls** — Weekly/monthly capital limits with automatic stop when thresholds hit
-- **Risk Management** — Triple barrier on every position (stop-loss + take-profit + time limit), server-side stop-losses that survive bot crashes
-- **Paper Trading** — Demo/testnet mode by default
-- **Pluggable Strategies** — Abstract strategy interface; ships with RSI+MACD momentum and Bollinger Bands mean reversion
+- **Risk Management** — Triple barrier on every position (stop-loss + take-profit + time limit), atomic entry reversal if SL placement fails, server-side stop-losses that survive bot crashes
+- **Paper Trading** — Demo/testnet mode by default, with unambiguous `PAPER_DRY_RUN` / `DEMO_REAL_BALANCE` / `LIVE_REAL_MONEY` mode announcement at startup
+- **Realistic Backtests** — Fee-aware P&L with per-side fee configuration and exchange presets
+- **Pluggable Strategies** — Config-driven selection between RSI+MACD momentum and Bollinger Bands mean reversion
 - **Persistent State** — SQLite-backed budget tracking survives restarts
 - **Telegram Bot** — Real-time trade notifications, status commands, kill switch
 
@@ -159,8 +160,12 @@ ruff check src/ tests/
 # Run the bot (demo mode)
 nct
 
-# Run backtester
+# Run backtester (fee-aware — defaults to Coinbase 0.4% per side)
 python scripts/backtest.py --pair BTC-USDT --timeframe 15m --limit 300
+
+# Override fees for a different exchange
+python scripts/backtest.py --pair BTC-USDT --exchange okx       # 0.1% per side
+python scripts/backtest.py --pair BTC-USDT --fee-pct 0.05       # custom rate
 
 # Deploy with Docker
 docker compose up -d
@@ -168,8 +173,9 @@ docker compose up -d
 
 ## Safety
 
-- Paper trading is the **default** — live trading requires explicitly setting `OKX_DEMO_MODE=false`
-- Every position has a **server-side stop-loss** on OKX (executes even if bot is offline)
+- Paper trading is the **default** — live trading requires explicitly setting `<EXCHANGE>_DEMO_MODE=false`
+- Startup emits an unmistakable `running_mode` log line: `PAPER_DRY_RUN`, `DEMO_REAL_BALANCE`, or `LIVE_REAL_MONEY` (and a matching Telegram header)
+- Every position has a **server-side stop-loss** (executes even if bot is offline). If stop-loss placement fails, the entry is automatically reversed — no unprotected positions.
 - Budget limits are **hard-enforced** — no code path can bypass the BudgetManager
 - API keys never appear in logs or config files
 - Graceful shutdown on SIGINT/SIGTERM cancels open orders and persists state

@@ -623,3 +623,14 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. **Updat
 4. API keys MUST never appear in logs, config files, or error messages
 5. Withdraw permission MUST NOT be enabled on any exchange API key
 6. The bot MUST gracefully close on SIGINT/SIGTERM (cancel open orders, log state)
+7. **Running mode MUST be announced unambiguously at startup** (#39). The
+   first `running_mode` log line resolves to exactly one of
+   `PAPER_DRY_RUN`, `DEMO_REAL_BALANCE`, or `LIVE_REAL_MONEY`. The same
+   mode drives the Telegram startup header. If you add a new session
+   type, extend `RunningMode` in `src/nct/runtime_mode.py` and update
+   `describe()` — do not conflate it with an existing mode.
+8. **Backtests MUST model fees** (#38). `run_backtest()` defaults to 0.4%
+   per side (Coinbase Advanced Trade taker). Never report backtest P&L
+   as "gross only" — use `result.total_pnl` (net) or show the
+   gross/fees/net breakdown. Exchange presets live in `_FEE_PRESETS` in
+   `scripts/backtest.py`.
