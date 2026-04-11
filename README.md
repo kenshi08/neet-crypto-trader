@@ -1,24 +1,26 @@
 # neet-crypto-trader
 
-Budget-controlled crypto trading agent for OKX. Automates short-term speculative trading with strict weekly/monthly budget limits on losses and gains.
+Budget-controlled crypto trading agent supporting **OKX** and **Bybit**. Automates short-term speculative trading with strict weekly/monthly budget limits on losses and gains.
 
 ## Features
 
-- **OKX Integration** — REST + WebSocket via official `python-okx` SDK
+- **Multi-exchange** — Switch between OKX and Bybit via the `EXCHANGE` env var
 - **Budget Controls** — Weekly/monthly capital limits with automatic stop when thresholds hit
 - **Risk Management** — Triple barrier on every position (stop-loss + take-profit + time limit), server-side stop-losses that survive bot crashes
-- **Paper Trading** — Demo mode by default using OKX's sandbox environment
-- **Pluggable Strategies** — Abstract strategy interface; ship with RSI + MACD momentum strategy
+- **Paper Trading** — Demo/testnet mode by default
+- **Pluggable Strategies** — Abstract strategy interface; ships with RSI+MACD momentum and Bollinger Bands mean reversion
 - **Persistent State** — SQLite-backed budget tracking survives restarts
+- **Telegram Bot** — Real-time trade notifications, status commands, kill switch
 
 ## Quick Start
 
 ### Prerequisites
 
 - Python 3.11+
-- OKX account with API key ([create one here](https://www.okx.com/account/my-api))
-  - Enable **Trade** permission only
-  - **Never** enable Withdraw permission
+- One of:
+  - **Bybit** account ([live](https://www.bybit.com) or [testnet](https://testnet.bybit.com)) — recommended
+  - **OKX** account ([create here](https://www.okx.com/account/my-api))
+- API key with **Trade** permission only — **never** enable Withdraw
 
 ### Installation
 
@@ -47,11 +49,23 @@ nct
 ### Configuration Reference
 
 **`.env`** — Credentials (never committed to git):
+
+For Bybit (recommended):
 ```
+EXCHANGE=bybit
+BYBIT_API_KEY=your-key
+BYBIT_API_SECRET=your-secret
+BYBIT_DEMO_MODE=true
+```
+
+For OKX:
+```
+EXCHANGE=okx
 OKX_API_KEY=your-key
 OKX_API_SECRET=your-secret
 OKX_PASSPHRASE=your-passphrase
 OKX_DEMO_MODE=true
+# Set OKX_BASE_URL=https://my.okx.com if you registered in Europe (EEA)
 ```
 
 **`config/default.toml`** — Trading parameters:

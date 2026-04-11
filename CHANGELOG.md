@@ -8,6 +8,19 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Multi-exchange support: Bybit** — Switch between OKX and Bybit via `EXCHANGE` env var
+  - `IExchange` abstract interface in `src/nct/exchange/base.py` (#29)
+  - `BybitClient` implementation using `pybit` SDK with V5 unified trading API (#30)
+  - `BybitCredentials` config with `BYBIT_` env prefix
+  - `create_exchange_client()` factory selecting between OKX and Bybit (#31)
+  - Symbol/timeframe conversion (`BTC-USDT` ↔ `BTCUSDT`, `15m` ↔ `15`)
+  - Bybit conditional orders for server-side stop-loss/take-profit
+  - Bybit testnet support via `BYBIT_DEMO_MODE=true`
+  - 24 new tests for Bybit client and exchange factory (246 total)
+  - `.env.example` updated with comprehensive multi-exchange template
+  - `CLAUDE.md` updated with Bybit notes and "Adding a new exchange" guide
+
+### Added
 - **Phase 6: Hardening** — Backtesting, Telegram bot, Docker deployment, second strategy
   - Backtesting engine with SL/TP simulation, Sharpe ratio, max drawdown, win rate metrics (#18)
   - Telegram bot — trade notifications, `/status`, `/stop` kill switch, `/balance` commands (#19)

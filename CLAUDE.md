@@ -8,21 +8,22 @@ A crypto trading agent for OKX that automates short-term speculative trading wit
 
 - **Python 3.11+**
 - **python-okx** — Official OKX SDK (REST + WebSocket)
+- **pybit** — Official Bybit SDK (V5 unified trading API)
 - **pandas + ta** — OHLCV data + technical indicators (ta library; pandas-ta requires 3.12+)
 - **Pydantic v2 + pydantic-settings** — Config validation, hot-reloadable fields
 - **aiosqlite** — SQLite persistence for budget tracking, trade history
 - **structlog** — Structured JSON logging
-- **aiolimiter** — Async rate limiting per OKX endpoint
+- **aiolimiter** — Async rate limiting per exchange endpoint
 - **python-dotenv** — Credentials from .env (never committed)
 - **Docker** — Deployment target (Synology NAS / VPS)
 
 ## Architecture
 
 ```
-Config (TOML + .env, Pydantic validated, hot-reload)
+Config (TOML + .env, EXCHANGE selector, Pydantic validated)
         |
-OKX Exchange Client (python-okx wrapper, @retrier decorator, dry-run branch)
-        |
+Exchange Factory → IExchange (OKXClient | BybitClient)
+        |  (@retrier decorator, dry-run branch, server-side SL/TP)
 Strategy Engine (IStrategy ABC, plugin loading, pandas-ta indicators)
         |  SignalResult
 Risk Manager (BudgetManager + PositionSizer + ProtectionManager)
@@ -536,7 +537,21 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. **Updat
 - Minimize dependencies — every dependency is a liability for a financial system
 - Audit new dependencies before adding: check maintenance status, security history, license
 
-## OKX-Specific Notes
+## Exchange-Specific Notes
+
+### Bybit (recommended)
+
+- **Testnet**: `testnet.bybit.com` — completely separate environment from production. Set `BYBIT_DEMO_MODE=true` to use it. The `pybit` SDK switches automatically via the `testnet=True` constructor flag.
+- **Testnet funds**: Request via testnet UI — instantly credited (no maintenance windows).
+- **Symbols**: Bybit uses `BTCUSDT` (no dash). Our `_to_bybit_symbol()` converts from `BTC-USDT`.
+- **Timeframes**: Bybit uses `1`, `15`, `60`, `240`, `D` instead of `1m`, `15m`, `1H`, `4H`, `1D`. Our `_to_bybit_timeframe()` handles this.
+- **Categories**: `spot`, `linear` (USDT perpetual), `inverse` (coin-margined), `option`. We default to `spot`.
+- **Account type**: `UNIFIED` for V5 API (default in our BybitClient).
+- **Conditional orders**: Stop-loss/take-profit via `place_order` with `triggerPrice` + `triggerDirection` (1=rises above, 2=falls below).
+- **Rate limits**: ~20 req/s for most endpoints (more generous than OKX).
+- **Error codes**: `10003` invalid key, `10018` rate limit, `110001` order failed.
+
+### OKX
 
 - **Demo mode**: Set `flag="1"` in API calls for demo environment (fake funds)
 - **Live mode**: Set `flag="0"` — requires explicit config change
@@ -552,6 +567,16 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. **Updat
   - US: `https://app.okx.com`
   - Set via `OKX_BASE_URL` env var. The python-okx SDK `domain` parameter passes this to all API calls.
 - **Demo API keys are separate from live keys**: Must be created while in "Demo Trading" mode on OKX website. Error `50119` usually means wrong domain or demo/live key mismatch.
+- **Demo account service unreliability** (#26, #28): OKX EEA demo (`my.okx.com`) frequently returns 503/50001 on authenticated endpoints. The bot is resilient but Bybit testnet is more reliable for development.
+
+### Adding a new exchange
+
+1. Create `src/nct/exchange/<name>_client.py` implementing `IExchange`
+2. Add `<Name>Credentials(BaseSettings)` in `src/nct/config.py`
+3. Add the new exchange to the `Literal` type and the `_ExchangeSelector`
+4. Update `create_exchange_client()` in `src/nct/exchange/factory.py`
+5. Write tests for the new client (mirror `test_bybit_client.py`)
+6. Update `.env.example` and CLAUDE.md
 
 ## Implementation Phases
 
