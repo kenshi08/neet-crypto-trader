@@ -221,6 +221,23 @@ class TradingAgent:
             self._config.strategy_params,
         )
 
+        # 10b. Regime detection — preload all strategies for fast switching
+        self._regime_classifier = None
+        self._regime_strategies: dict[str, IStrategy] = {}
+        if self._config.trading.auto_regime_detection:
+            from nct.strategy.regime import RegimeClassifier
+            self._regime_classifier = RegimeClassifier()
+            for _regime_name, strat_name in self._config.trading.regime_map.items():
+                if strat_name and strat_name not in self._regime_strategies:
+                    is_active = strat_name == self._config.trading.strategy
+                    sp = self._config.strategy_params if is_active else {}
+                    self._regime_strategies[strat_name] = create_strategy(strat_name, sp)
+            log.info(
+                'regime_detection_enabled',
+                strategies=list(self._regime_strategies.keys()),
+                timeframe=self._config.trading.regime_timeframe,
+            )
+
         # 11. Data provider
         self._data_provider = DataProvider(
             self._client, cache_ttl_seconds=self._config.trading.poll_interval_seconds,
@@ -400,11 +417,19 @@ class TradingAgent:
         )
 
         # Fetch higher-timeframe data for multi-TF confirmation (#97)
-        htf_all: dict[str, dict[str, 'pd.DataFrame']] = {}
+        htf_all: dict = {}
         conf_tfs = self._config.trading.confirmation_timeframes
         if conf_tfs:
             htf_all = await self._data_provider.get_htf_dataframes(
                 eligible_pairs, conf_tfs, limit=60,
+            )
+
+        # Fetch regime-timeframe data if regime detection is enabled (#99)
+        regime_dfs: dict = {}
+        if self._regime_classifier:
+            regime_tf = self._config.trading.regime_timeframe
+            regime_dfs = await self._data_provider.get_dataframes(
+                eligible_pairs, timeframe=regime_tf, limit=60,
             )
 
         # Evaluate strategy for each pair
@@ -416,9 +441,32 @@ class TradingAgent:
             if self._portfolio.has_open_trade(pair):
                 continue
 
+            # Regime-based strategy selection (#100)
+            active_strategy = self._strategy
+            if self._regime_classifier and pair in regime_dfs:
+                regime_result = self._regime_classifier.classify(regime_dfs[pair])
+                regime_map = self._config.trading.regime_map
+                strat_name = regime_map.get(regime_result.regime.value, '')
+                if not strat_name:
+                    log.info(
+                        'regime_skip_pair',
+                        pair=pair,
+                        regime=regime_result.regime.value,
+                    )
+                    continue  # EXTREME_VOL or unmapped → skip
+                if strat_name in self._regime_strategies:
+                    active_strategy = self._regime_strategies[strat_name]
+                log.debug(
+                    'regime_classified',
+                    pair=pair,
+                    regime=regime_result.regime.value,
+                    strategy=active_strategy.name,
+                    adx=round(regime_result.adx, 1),
+                )
+
             # Run strategy with optional HTF data
             htf_data = htf_all.get(pair) if htf_all else None
-            result = self._strategy.evaluate(df, {'pair': pair}, htf_data=htf_data)
+            result = active_strategy.evaluate(df, {'pair': pair}, htf_data=htf_data)
 
             if result.signal == Signal.HOLD:
                 continue
