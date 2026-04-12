@@ -13,7 +13,7 @@
 
 [trading]
 pairs = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "AVAX-USDT", "LINK-USDT"]
-strategy = "trend_following"        # Default fallback when regime is disabled/ambiguous
+strategy = "composite"        # Default fallback when regime is disabled/ambiguous
 timeframe = "15m"
 max_open_positions = 3
 poll_interval_seconds = 15

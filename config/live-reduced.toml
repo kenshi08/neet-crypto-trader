@@ -16,7 +16,7 @@
 
 [trading]
 pairs = ["BTC-USDT", "ETH-USDT", "SOL-USDT"]
-strategy = "trend_following"
+strategy = "composite"
 timeframe = "15m"
 max_open_positions = 2              # Conservative: 2 simultaneous max
 poll_interval_seconds = 15
