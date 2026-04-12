@@ -34,7 +34,7 @@ def _make_ohlcv(n: int = 150, seed: int = 42, trend: float = 0.0) -> pd.DataFram
 class TestCompositeStrategy:
     @pytest.fixture()
     def strategy(self):
-        return CompositeStrategy(base_strategy='momentum')
+        return CompositeStrategy()
 
     def test_name(self, strategy):
         assert strategy.name == 'composite'
@@ -68,9 +68,7 @@ class TestCompositeStrategy:
 
     def test_entropy_filter_blocks_random_market(self):
         """When PE is high (random), should block signals."""
-        strategy = CompositeStrategy(
-            base_strategy='momentum', pe_threshold=0.3,
-        )
+        strategy = CompositeStrategy(pe_threshold=0.3)
         rng = np.random.default_rng(42)
         # Random walk = high entropy
         close = 100 + np.cumsum(rng.normal(0, 1, 150))
@@ -88,7 +86,7 @@ class TestCompositeStrategy:
             assert 'entropy' in result.reason.lower() or result.signal == Signal.HOLD
 
     def test_hmm_training_and_prediction(self):
-        strategy = CompositeStrategy(base_strategy='momentum')
+        strategy = CompositeStrategy()
         # Train HMM on mixed data (bull + bear + chop segments)
         bull = _make_ohlcv(200, seed=10, trend=0.05)
         bear = _make_ohlcv(200, seed=11, trend=-0.05)
@@ -130,6 +128,22 @@ class TestCompositeStrategy:
         assert strategy.hmm is not None
         assert not strategy.hmm.is_trained
 
+    def test_runs_all_4_ta_strategies(self, strategy):
+        """Verify all 4 TA strategy signals appear as features."""
+        df = _make_ohlcv(150)
+        df = strategy.populate_indicators(df, {'pair': 'BTC-USDT'})
+        for strat_name in ('momentum', 'mean_reversion', 'trend_following', 'volatility_breakout'):
+            assert f'ta_{strat_name}_signal' in df.columns
+            assert f'ta_{strat_name}_conf' in df.columns
+
+    def test_fallback_picks_best_confidence(self):
+        """Without meta-model, should pick highest-confidence TA signal."""
+        strategy = CompositeStrategy()
+        df = _make_ohlcv(150, seed=99, trend=0.1)
+        result = strategy.evaluate(df, {'pair': 'BTC-USDT'})
+        # Should use fallback (meta-model not trained)
+        assert 'Fallback' in result.reason or 'Entropy' in result.reason
+
 
 # ---------------------------------------------------------------------------
 # Tests: Factory registration
@@ -145,7 +159,6 @@ class TestCompositeFactory:
 
     def test_create_composite_with_params(self):
         s = create_strategy('composite', {
-            'base_strategy': 'trend_following',
             'pe_threshold': 0.8,
         })
         assert s.name == 'composite'
