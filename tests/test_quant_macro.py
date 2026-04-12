@@ -65,10 +65,10 @@ class TestTTLCache:
 
     def test_expired_key_returns_none(self):
         cache = _TTLCache()
-        cache.set('key1', 'value1', 0)  # 0 TTL = already expired
-        # Monotonic clock means 0 TTL expires immediately after set
+        cache.set('key1', 'value1', 0)  # 0 TTL = expires immediately
+        # Wait enough for monotonic clock to advance past expiry
         import time
-        time.sleep(0.01)
+        time.sleep(0.05)
         assert cache.get('key1') is None
 
     def test_clear(self):
