@@ -98,6 +98,21 @@ CREATE TABLE IF NOT EXISTS telegram_commands (
     args TEXT,
     result TEXT NOT NULL DEFAULT 'success'
 );
+
+CREATE TABLE IF NOT EXISTS pipeline_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    timestamp TEXT NOT NULL,
+    run_type TEXT NOT NULL,
+    strategy TEXT NOT NULL DEFAULT 'composite',
+    n_samples INTEGER,
+    walk_forward_accuracy REAL,
+    degradation_pct REAL,
+    train_accuracy REAL,
+    model_path TEXT,
+    status TEXT NOT NULL DEFAULT 'success',
+    details_json TEXT
+);
 """
 
 
