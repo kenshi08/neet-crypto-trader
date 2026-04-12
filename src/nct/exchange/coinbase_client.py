@@ -385,7 +385,10 @@ class CoinbaseClient(IExchange):
 
         self._ensure_sdk()
         product_id = _to_coinbase_product(order.inst_id)
-        client_order_id = order.client_order_id or f'nct_{uuid.uuid4().hex[:16]}'
+        # Generate idempotency key once — reused across retries
+        if not order.client_order_id:
+            order.client_order_id = f'nct_{uuid.uuid4().hex[:16]}'
+        client_order_id = order.client_order_id
 
         async with self._trade_limiter:
             try:
@@ -682,14 +685,19 @@ class CoinbaseClient(IExchange):
         )
         return response
 
+    @retrier
     async def get_algo_order_status(
         self, inst_id: str, algo_order_id: str,
     ) -> OrderStatus:
         if algo_order_id.startswith('dry_'):
             return OrderStatus.PENDING
 
+        self._ensure_sdk()
         try:
-            result = self._rest_client.get_order(order_id=algo_order_id)
+            async with self._trade_limiter:
+                result = await self._run_sync(
+                    self._session.get_order, order_id=algo_order_id,
+                )
             order_data = getattr(result, 'order', result)
             status = getattr(order_data, 'status', '')
             if status in ('OPEN', 'PENDING'):

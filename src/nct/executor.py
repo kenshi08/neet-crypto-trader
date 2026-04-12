@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from decimal import Decimal
 
 import structlog
@@ -15,6 +16,30 @@ from nct.risk.protections import ProtectionManager
 from nct.risk.risk_manager import TradeDecision
 
 log = structlog.get_logger()
+
+# Barrier repair backoff: 60s, 120s, 240s, 480s between attempts
+BARRIER_REPAIR_BACKOFF_BASE = 60  # seconds
+BARRIER_REPAIR_MAX_ATTEMPTS = 5
+
+
+@dataclass
+class RepairState:
+    """Tracks barrier repair attempts with exponential backoff."""
+
+    attempt_count: int = 0
+    last_attempt_time: float = 0.0
+
+    def should_attempt(self, now: float) -> bool:
+        if self.attempt_count >= BARRIER_REPAIR_MAX_ATTEMPTS:
+            return False
+        if self.attempt_count == 0:
+            return True
+        delay = BARRIER_REPAIR_BACKOFF_BASE * (2 ** (self.attempt_count - 1))
+        return (now - self.last_attempt_time) >= delay
+
+    def record_attempt(self, now: float) -> None:
+        self.attempt_count += 1
+        self.last_attempt_time = now
 
 
 class OrderExecutor:
@@ -43,6 +68,8 @@ class OrderExecutor:
         self._budget = budget_manager
         self._protections = protection_manager
         self._db = db  # Database reference for trade analytics (optional)
+        # Barrier repair backoff state: inst_id → RepairState
+        self._repair_states: dict[str, RepairState] = {}
 
     async def execute_trade(
         self,
@@ -314,6 +341,9 @@ class OrderExecutor:
             except Exception:
                 log.debug('trade_analytics_close_failed', trade_id=trade_id)
 
+        # Clean up barrier repair state
+        self._repair_states.pop(inst_id, None)
+
         log.info(
             'trade_closed_by_executor',
             inst_id=inst_id,
@@ -557,8 +587,13 @@ class OrderExecutor:
         return affected
 
     async def _verify_single_barrier(self, trade: TrackedTrade) -> None:
-        """Check and repair barriers for a single trade."""
+        """Check and repair barriers for a single trade.
+
+        Uses exponential backoff to avoid flooding the exchange with repair
+        requests. After max attempts, closes the position (fail safe).
+        """
         close_side = Side.SELL if trade.side == 'buy' else Side.BUY
+        needs_repair = False
 
         # Check stop-loss
         if trade.stop_loss_algo_id:
@@ -566,27 +601,68 @@ class OrderExecutor:
                 trade.inst_id, trade.stop_loss_algo_id,
             )
             if sl_status != OrderStatus.PENDING:
+                needs_repair = True
                 log.warning(
                     'barrier_missing_sl',
                     inst_id=trade.inst_id,
                     algo_id=trade.stop_loss_algo_id,
                     status=sl_status.value,
                 )
-                await self._repair_stop_loss(trade, close_side)
 
         # Check take-profit
+        tp_missing = False
         if trade.take_profit_algo_id:
             tp_status = await self._client.get_algo_order_status(
                 trade.inst_id, trade.take_profit_algo_id,
             )
             if tp_status != OrderStatus.PENDING:
+                tp_missing = True
                 log.warning(
                     'barrier_missing_tp',
                     inst_id=trade.inst_id,
                     algo_id=trade.take_profit_algo_id,
                     status=tp_status.value,
                 )
-                await self._repair_take_profit(trade, close_side)
+
+        if not needs_repair and not tp_missing:
+            # Barriers healthy — reset repair state
+            self._repair_states.pop(trade.inst_id, None)
+            return
+
+        # Apply backoff before repair
+        now = time.monotonic()
+        state = self._repair_states.setdefault(trade.inst_id, RepairState())
+
+        if not state.should_attempt(now):
+            if state.attempt_count >= BARRIER_REPAIR_MAX_ATTEMPTS:
+                log.critical(
+                    'barrier_repair_max_attempts',
+                    inst_id=trade.inst_id,
+                    attempts=state.attempt_count,
+                    msg='Max repair attempts exceeded — closing position',
+                )
+                try:
+                    ticker = await self._client.get_ticker(trade.inst_id)
+                    await self.close_trade(
+                        trade.inst_id,
+                        current_price=ticker.last,
+                        reason='barrier_repair_exhausted',
+                    )
+                except Exception:
+                    log.critical(
+                        'barrier_repair_exhausted_close_failed',
+                        inst_id=trade.inst_id,
+                        msg='MANUAL INTERVENTION REQUIRED',
+                    )
+                self._repair_states.pop(trade.inst_id, None)
+            return
+
+        state.record_attempt(now)
+
+        if needs_repair:
+            await self._repair_stop_loss(trade, close_side)
+        if tp_missing:
+            await self._repair_take_profit(trade, close_side)
 
     async def _repair_stop_loss(self, trade: TrackedTrade, close_side: Side) -> None:
         """Re-place a missing stop-loss. Close position if re-placement fails."""
