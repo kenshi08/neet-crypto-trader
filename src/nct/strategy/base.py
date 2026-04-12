@@ -75,10 +75,16 @@ class IStrategy(ABC):
 
     def evaluate(
         self, dataframe: pd.DataFrame, metadata: dict[str, Any],
+        htf_data: dict[str, pd.DataFrame] | None = None,
     ) -> SignalResult:
         """Run the full strategy pipeline and return a signal for the latest candle.
 
         This is the main entry point called by the trading loop.
+
+        Args:
+            htf_data: Optional higher-timeframe DataFrames keyed by timeframe
+                      (e.g. {'1H': df_1h, '4H': df_4h}). Used for multi-TF
+                      confirmation — counter-trend signals get reduced confidence.
         """
         if len(dataframe) < self.required_candle_count:
             return SignalResult(
@@ -95,7 +101,40 @@ class IStrategy(ABC):
         df = self.populate_entry_trend(df, metadata)
         df = self.populate_exit_trend(df, metadata)
 
-        return self._extract_signal(df, metadata)
+        result = self._extract_signal(df, metadata)
+
+        # Multi-timeframe confirmation (#97): reduce confidence on
+        # signals that disagree with higher-timeframe trend direction.
+        if htf_data and result.signal != Signal.HOLD:
+            result = self._apply_htf_filter(result, htf_data)
+
+        return result
+
+    def _apply_htf_filter(
+        self, result: SignalResult, htf_data: dict[str, pd.DataFrame],
+    ) -> SignalResult:
+        """Reduce confidence if the signal contradicts the higher-TF trend."""
+        for _tf, htf_df in htf_data.items():
+            if len(htf_df) < 50:
+                continue
+            # Simple HTF trend: close above/below EMA50
+            ema50 = htf_df['close'].ewm(span=50, adjust=False).mean()
+            htf_close = htf_df['close'].iloc[-1]
+            htf_ema = ema50.iloc[-1]
+
+            htf_bullish = htf_close > htf_ema
+            signal_bullish = result.signal == Signal.BUY
+
+            if htf_bullish != signal_bullish:
+                # Counter-trend: halve confidence
+                return SignalResult(
+                    signal=result.signal,
+                    confidence=result.confidence * 0.5,
+                    reason=result.reason + ' (counter-HTF, confidence halved)',
+                    suggested_stop_loss_pct=result.suggested_stop_loss_pct,
+                    suggested_take_profit_pct=result.suggested_take_profit_pct,
+                )
+        return result
 
     def _extract_signal(
         self, dataframe: pd.DataFrame, metadata: dict[str, Any],

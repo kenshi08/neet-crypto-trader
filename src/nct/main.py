@@ -399,6 +399,14 @@ class TradingAgent:
             limit=max(100, self._strategy.required_candle_count + 10),
         )
 
+        # Fetch higher-timeframe data for multi-TF confirmation (#97)
+        htf_all: dict[str, dict[str, 'pd.DataFrame']] = {}
+        conf_tfs = self._config.trading.confirmation_timeframes
+        if conf_tfs:
+            htf_all = await self._data_provider.get_htf_dataframes(
+                eligible_pairs, conf_tfs, limit=60,
+            )
+
         # Evaluate strategy for each pair
         for pair, df in dataframes.items():
             if self._state != AgentState.RUNNING:
@@ -408,8 +416,9 @@ class TradingAgent:
             if self._portfolio.has_open_trade(pair):
                 continue
 
-            # Run strategy
-            result = self._strategy.evaluate(df, {'pair': pair})
+            # Run strategy with optional HTF data
+            htf_data = htf_all.get(pair) if htf_all else None
+            result = self._strategy.evaluate(df, {'pair': pair}, htf_data=htf_data)
 
             if result.signal == Signal.HOLD:
                 continue

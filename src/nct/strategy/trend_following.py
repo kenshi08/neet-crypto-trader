@@ -36,6 +36,8 @@ class TrendFollowingStrategy(IStrategy):
         atr_period: int = 14,
         atr_sl_multiplier: float = 2.0,
         atr_tp_multiplier: float = 3.0,
+        volume_ma_period: int = 20,
+        volume_multiplier: float = 1.2,
     ) -> None:
         self._ema_fast = ema_fast
         self._ema_slow = ema_slow
@@ -44,6 +46,8 @@ class TrendFollowingStrategy(IStrategy):
         self._atr_period = atr_period
         self._atr_sl_multiplier = atr_sl_multiplier
         self._atr_tp_multiplier = atr_tp_multiplier
+        self._volume_ma_period = volume_ma_period
+        self._volume_multiplier = volume_multiplier
 
     @property
     def name(self) -> str:
@@ -80,6 +84,12 @@ class TrendFollowingStrategy(IStrategy):
         )
         dataframe['atr'] = atr.average_true_range()
 
+        # Volume confirmation (#96)
+        dataframe['volume_ma'] = dataframe['volume'].rolling(
+            window=self._volume_ma_period,
+        ).mean()
+        dataframe['volume_ratio'] = dataframe['volume'] / dataframe['volume_ma']
+
         return dataframe
 
     def populate_entry_trend(
@@ -95,19 +105,22 @@ class TrendFollowingStrategy(IStrategy):
         ema_fast = dataframe['ema_fast']
         ema_slow = dataframe['ema_slow']
         adx = dataframe['adx']
+        vol_ok = dataframe['volume_ratio'] >= self._volume_multiplier
 
-        # Golden cross: fast EMA crosses above slow EMA + strong trend
+        # Golden cross: fast EMA crosses above slow EMA + strong trend + volume
         long_mask = (
             (ema_fast > ema_slow)
             & (ema_fast.shift(1) <= ema_slow.shift(1))
             & (adx > self._adx_threshold)
+            & vol_ok
         )
 
-        # Death cross: fast EMA crosses below slow EMA + strong trend
+        # Death cross: fast EMA crosses below slow EMA + strong trend + volume
         short_mask = (
             (ema_fast < ema_slow)
             & (ema_fast.shift(1) >= ema_slow.shift(1))
             & (adx > self._adx_threshold)
+            & vol_ok
         )
 
         dataframe.loc[long_mask, 'enter_long'] = 1
