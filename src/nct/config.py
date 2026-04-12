@@ -104,6 +104,15 @@ class TradingConfig(BaseModel):
     poll_interval_seconds: int = 10
     reconciliation_interval: int = 10  # run reconciliation every N iterations
     confirmation_timeframes: list[str] = Field(default_factory=list)  # e.g. ["1H", "4H"]
+    auto_regime_detection: bool = False
+    regime_timeframe: str = '1H'
+    regime_map: dict[str, str] = Field(default_factory=lambda: {
+        'trending_up': 'trend_following',
+        'trending_down': 'trend_following',
+        'ranging_low_vol': 'mean_reversion',
+        'ranging_high_vol': 'volatility_breakout',
+        'extreme_vol': '',
+    })
 
     @field_validator('pairs', mode='before')
     @classmethod
