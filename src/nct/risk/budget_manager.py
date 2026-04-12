@@ -33,6 +33,7 @@ class BudgetManager:
         self._daily_pnl = Decimal(0)
         self._daily_trade_count = 0
         self._daily_stop_loss_count = 0
+        self._daily_notional = Decimal(0)
         self._current_date = ''
 
     async def initialize(self) -> None:
@@ -113,6 +114,14 @@ class BudgetManager:
                 f'> max {max_position} USDT ({self._config.max_position_pct}% of budget)'
             )
 
+        # Check daily notional cap
+        cap = self._config.daily_notional_cap_usdt
+        if cap > 0 and self._daily_notional + cost_usdt > cap:
+            return False, (
+                f'Daily notional cap: {self._daily_notional} + {cost_usdt} '
+                f'> {cap} USDT'
+            )
+
         return True, ''
 
     async def record_trade_open(self, cost_usdt: Decimal) -> None:
@@ -120,6 +129,7 @@ class BudgetManager:
         self._capital_deployed += cost_usdt
         self._trade_count += 1
         self._daily_trade_count += 1
+        self._daily_notional += cost_usdt
         await self._persist()
 
     async def record_trade_close(self, pnl: Decimal, *, was_stop_loss: bool = False) -> None:
@@ -152,6 +162,7 @@ class BudgetManager:
             self._daily_pnl = Decimal(0)
             self._daily_trade_count = 0
             self._daily_stop_loss_count = 0
+            self._daily_notional = Decimal(0)
             log.info('daily_stats_reset', date=today)
 
         # Period reset

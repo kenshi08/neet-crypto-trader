@@ -13,6 +13,7 @@ max_loss_pct = 5.0              # Stop trading at -5% of budget
 max_gain_pct = 15.0             # Take profits at +15% of budget
 max_position_pct = 20.0         # Max 20% of budget per single trade
 daily_loss_limit_usdt = 100     # Hard stop for the day
+daily_notional_cap_usdt = 0     # Max notional per day, 0 = disabled
 
 [risk]
 stop_loss_pct = 3.0             # Per-trade stop-loss
@@ -22,6 +23,18 @@ trailing_stop = false
 trailing_stop_activation_pct = 2.0
 trailing_stop_delta_pct = 1.0
 min_signal_confidence = 0.6     # Minimum strategy confidence to enter a trade
+max_correlated_positions = 2    # Max positions from same correlation group
+volatility_circuit_breaker_multiplier = 0.0  # 0 = disabled; e.g. 3.0 = halt if ATR > 3x median
+volatility_lookback_candles = 20
+volatility_reference_pair = ""  # e.g. "BTC-USD" — leave empty to disable
+
+[risk.correlation_groups]
+# btc_beta = ["BTC-USD", "ETH-USD", "SOL-USD"]
+
+[market_selection]
+min_volume_usdt = 0             # Min 24h volume in USDT, 0 = disabled
+max_spread_pct = 0              # Max bid-ask spread %, 0 = disabled
+blacklist = []                  # Pairs to never trade
 
 [telegram]
 min_severity = "low"                # minimum severity to send: low, medium, high, critical

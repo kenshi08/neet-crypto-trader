@@ -45,12 +45,14 @@ class RiskManager:
         protection_manager: ProtectionManager,
         risk_config: RiskConfig,
         trading_config: TradingConfig,
+        portfolio=None,
     ) -> None:
         self._budget = budget_manager
         self._sizer = position_sizer
         self._protections = protection_manager
         self._risk = risk_config
         self._trading = trading_config
+        self._portfolio = portfolio  # PortfolioTracker for correlation checks
 
     def evaluate_trade(
         self,
@@ -72,6 +74,11 @@ class RiskManager:
         lock = self._protections.check(pair=inst_id)
         if lock.locked:
             return self._deny(lock.reason)
+
+        # 1b. Correlation-aware position limits
+        corr_deny = self._check_correlation(inst_id)
+        if corr_deny:
+            return self._deny(corr_deny)
 
         # 2. Signal confidence threshold
         if signal_confidence < self._risk.min_signal_confidence:
@@ -132,6 +139,31 @@ class RiskManager:
         )
 
         return decision
+
+    def _check_correlation(self, inst_id: str) -> str:
+        """Check if opening this pair would exceed correlation group limits.
+
+        Returns denial reason string if blocked, empty string if OK.
+        """
+        groups = self._risk.correlation_groups
+        max_corr = self._risk.max_correlated_positions
+        if not groups or not self._portfolio:
+            return ''
+
+        open_pairs = set(self._portfolio.open_trades.keys())
+
+        for group_name, members in groups.items():
+            if inst_id not in members:
+                continue
+            # Count how many from this group are already open
+            open_in_group = open_pairs & set(members)
+            if len(open_in_group) >= max_corr:
+                return (
+                    f'Correlation limit: {len(open_in_group)}/{max_corr} '
+                    f'{group_name} positions open ({", ".join(sorted(open_in_group))})'
+                )
+
+        return ''
 
     @staticmethod
     def _deny(reason: str) -> TradeDecision:
