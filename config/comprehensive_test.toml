@@ -1,0 +1,130 @@
+# Comprehensive test config — exercises ALL strategies and ALL features on Coinbase demo.
+# Fund source: USDC. Designed for 15m candles across 7 pairs.
+# DO NOT use on a live account.
+#
+# STRATEGY SWITCHER: Change the line below to test each strategy.
+# Options: "momentum", "mean_reversion", "trend_following", "volatility_breakout"
+
+[trading]
+pairs = ["BTC-USDC", "ETH-USDC", "SOL-USDC", "AVAX-USDC", "LINK-USDC", "DOGE-USDC", "XRP-USDC"]
+strategy = "trend_following"        # <-- CHANGE THIS to swap strategy
+timeframe = "15m"                   # Balanced: fewer false signals than 5m, more trades than 1H
+max_open_positions = 3              # 3 simultaneous — tests correlation + budget limits
+poll_interval_seconds = 15
+reconciliation_interval = 5         # Barrier + position checks every 5 iterations (~75s)
+
+[budget]
+period = "weekly"
+amount_usdt = 300                   # $300 USDC/week
+max_loss_pct = 10.0                 # Stop trading at -10% ($30 loss)
+max_gain_pct = 25.0                 # Take profits at +25% ($75 gain)
+max_position_pct = 30.0             # Max $90 per single trade
+daily_loss_limit_usdt = 40          # Hard daily loss cap
+daily_notional_cap_usdt = 800       # Max $800 notional traded per day
+
+[risk]
+# Per-trade risk
+stop_loss_pct = 2.0                 # 2% SL — moderate tightness
+take_profit_pct = 3.5               # 3.5% TP — 1.75:1 reward/risk
+time_limit_seconds = 1800           # 30-minute time limit — forces exits for data generation
+min_signal_confidence = 0.35        # Moderate bar — enough signals to test, not so low it's noise
+
+# Trailing stop (Phase 12)
+trailing_stop = true
+trailing_stop_activation_pct = 1.5  # Activate after +1.5% unrealized gain
+trailing_stop_delta_pct = 0.7       # Trail 0.7% behind the high-water mark
+
+# Breakeven (Phase 12)
+breakeven_trigger_pct = 1.2         # Move SL to entry at +1.2% (fires before trailing activates)
+
+# Correlation limits (Phase 10)
+max_correlated_positions = 2        # Max 2 from same correlation group at once
+
+# Volatility circuit breaker (Phase 10)
+volatility_circuit_breaker_multiplier = 3.0  # Halt trading if ATR > 3x median ATR
+volatility_lookback_candles = 20
+volatility_reference_pair = "BTC-USDC"       # Use BTC volatility as market-wide reference
+
+# Correlation groups — MUST come after all plain [risk] keys
+[risk.correlation_groups]
+btc_beta = ["BTC-USDC", "ETH-USDC", "SOL-USDC"]       # Large caps move together
+alt_defi = ["AVAX-USDC", "LINK-USDC"]                  # DeFi infrastructure
+meme_retail = ["DOGE-USDC", "XRP-USDC"]                # Retail-driven
+
+# Partial profit taking — 2-stage exit (Phase 12)
+# MUST come after [risk.correlation_groups]
+[[risk.partial_tp]]
+pct = 2.0                           # Stage 1: close 40% at +2.0%
+close_fraction = 0.4
+
+[[risk.partial_tp]]
+pct = 3.0                           # Stage 2: close 30% of remainder at +3.0%
+close_fraction = 0.3
+
+# --- Market selection filters (Phase 10) ---
+[market_selection]
+min_volume_usdt = 50000             # Skip pairs with < $50k 24h volume
+max_spread_pct = 0.8                # Skip if bid-ask spread > 0.8%
+blacklist = []                      # Add pairs here to exclude (e.g. ["SHIB-USDC"])
+
+# --- Telegram alerts ---
+[telegram]
+min_severity = "low"                # See everything during test
+quiet_hours_start = 23              # Quiet 11pm-7am Singapore time
+quiet_hours_end = 7
+quiet_hours_timezone = "Asia/Singapore"
+quiet_hours_min_severity = "high"   # Only high/critical during quiet hours
+
+
+# =============================================================================
+# STRATEGY PARAMETERS — All four sections below are always loaded.
+# Only the section matching `trading.strategy` above is used at runtime.
+# =============================================================================
+
+# --- MOMENTUM: RSI + MACD ---
+# Best in: choppy/ranging markets with quick reversals
+# Signals: RSI oversold + MACD histogram crossover
+[strategy.momentum]
+rsi_period = 14                     # Standard RSI lookback
+rsi_oversold = 35.0                 # Slightly wider than classic 30 — more signals on 15m
+rsi_overbought = 65.0              # Slightly tighter than classic 70
+macd_fast = 12
+macd_slow = 26
+macd_signal = 9
+atr_period = 14
+atr_sl_multiplier = 1.5            # SL = 1.5x ATR from entry
+atr_tp_multiplier = 2.5            # TP = 2.5x ATR from entry
+
+# --- MEAN REVERSION: Bollinger Bands + Volume ---
+# Best in: ranging/consolidating markets
+# Signals: price touches lower band + volume spike confirms
+[strategy.mean_reversion]
+bb_period = 20                      # Standard BB lookback
+bb_std = 2.0                       # 2 standard deviations
+volume_ma_period = 20
+volume_multiplier = 1.3            # Require 30% above-average volume for confirmation
+atr_period = 14
+atr_sl_multiplier = 1.5
+atr_tp_multiplier = 2.0            # Conservative target — mean reversion has shorter moves
+
+# --- TREND FOLLOWING: EMA Crossover + ADX ---
+# Best in: strong trending markets with sustained moves
+# Signals: fast EMA crosses slow + ADX confirms trend strength
+[strategy.trend_following]
+ema_fast = 9                        # Fast EMA — responsive to recent price
+ema_slow = 21                       # Slow EMA — trend direction anchor
+adx_period = 14
+adx_threshold = 22.0               # Slightly lower than default 25 — catches trends earlier
+atr_period = 14
+atr_sl_multiplier = 2.0            # Wider stop — give trends room to breathe
+atr_tp_multiplier = 3.0            # Larger target — let trends run
+
+# --- VOLATILITY BREAKOUT: ATR Range Breakout ---
+# Best in: low-volatility consolidation → expansion
+# Signals: price breaks N-period high/low by ATR-scaled threshold
+[strategy.volatility_breakout]
+lookback_period = 20                # 20-period range for high/low
+atr_period = 14
+breakout_atr_multiplier = 0.4      # Slightly lower threshold — catch more breakouts on 15m
+atr_sl_multiplier = 1.0            # Tight stop — failed breakouts exit fast
+atr_tp_multiplier = 2.0            # 2:1 target on successful breakouts
