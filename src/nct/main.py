@@ -137,46 +137,23 @@ class TradingAgent:
             demo_mode=active_creds.demo_mode,
         )
 
-        # 1. Exchange client (via factory)
-        self._client = create_exchange_client(self._config)
-
-        # 2. Validate connection (if API key provided)
-        if active_creds.api_key:
-            connected = await self._client.validate_connection()
-            if not connected:
-                log.warning(
-                    'startup_no_connection',
-                    msg='Could not validate exchange connection — will retry in trading loop',
-                )
-
-        # 3. Database
+        # 1. Database (shared across all exchanges)
         db_path = get_db_path(is_dry_run=active_creds.demo_mode)
         self._db = Database(db_path)
         await self._db.connect()
 
-        # 4. Budget manager
-        self._budget_manager = BudgetManager(self._config.budget, self._db)
-        await self._budget_manager.initialize()
-
-        # 5. Position sizer
+        # 2. Shared components (stateless, exchange-agnostic)
         self._position_sizer = PositionSizer(
             self._config.budget, self._config.risk,
         )
 
-        # 6. Protection plugins
         protections: list = [
             StoplossGuard(
-                trade_limit=4,
-                lookback_seconds=3600,
-                stop_duration_seconds=3600,
+                trade_limit=4, lookback_seconds=3600, stop_duration_seconds=3600,
             ),
-            MaxDrawdown(
-                max_drawdown_usdt=self._config.budget.daily_loss_limit_usdt,
-            ),
+            MaxDrawdown(max_drawdown_usdt=self._config.budget.daily_loss_limit_usdt),
             CooldownPeriod(cooldown_seconds=300),
         ]
-
-        # Volatility circuit breaker (optional)
         self._volatility_cb: VolatilityCircuitBreaker | None = None
         if self._config.risk.volatility_circuit_breaker_multiplier > 0:
             self._volatility_cb = VolatilityCircuitBreaker(
@@ -184,10 +161,8 @@ class TradingAgent:
                 lookback_candles=self._config.risk.volatility_lookback_candles,
             )
             protections.append(self._volatility_cb)
-
         self._protection_manager = ProtectionManager(protections)
 
-        # 6b. Market selector
         ms_cfg = self._config.market_selection
         self._market_selector = MarketSelector(
             min_volume_usdt=ms_cfg.min_volume_usdt,
@@ -195,56 +170,50 @@ class TradingAgent:
             blacklist=ms_cfg.blacklist,
         )
 
-        # 7. Portfolio tracker
-        self._portfolio = PortfolioTracker(self._client, self._db)
-        await self._portfolio.initialize()
-
-        # 8. Risk manager (needs portfolio for correlation checks)
-        self._risk_manager = RiskManager(
-            budget_manager=self._budget_manager,
-            position_sizer=self._position_sizer,
-            protection_manager=self._protection_manager,
-            risk_config=self._config.risk,
-            trading_config=self._config.trading,
-            portfolio=self._portfolio,
-            supports_shorting=self._client.supports_shorting,
-        )
-
-        # 9. Order executor
-        self._executor = OrderExecutor(
-            client=self._client,
-            portfolio=self._portfolio,
-            budget_manager=self._budget_manager,
-            protection_manager=self._protection_manager,
-            db=self._db,
-        )
-
-        # 9b. Wrap in MultiExchangeManager (single-exchange for now)
+        # 3. Build exchange portfolios (single or multi)
         from nct.config import PortfolioConfig
         from nct.portfolio.multi_exchange import ExchangePortfolio, MultiExchangeManager
-        single_portfolio_config = PortfolioConfig(
-            exchange=self._config.exchange,
-            pairs=self._config.trading.pairs,
-            quote_currency='USDT',
-            budget_amount=self._config.budget.amount_usdt,
-            max_positions=self._config.trading.max_open_positions,
-        )
-        single_ep = ExchangePortfolio(
-            name=self._config.exchange,
-            config=single_portfolio_config,
-            client=self._client,
-            tracker=self._portfolio,
-            budget=self._budget_manager,
-            executor=self._executor,
-            data_provider=DataProvider(
-                self._client,
-                cache_ttl_seconds=self._config.trading.poll_interval_seconds,
+
+        exchange_portfolios: list[ExchangePortfolio] = []
+
+        if self._config.is_multi_exchange:
+            # Multi-exchange: create N clients from [[portfolios]] config
+            for pcfg in self._config.portfolios:
+                if not pcfg.enabled:
+                    continue
+                ep = await self._build_exchange_portfolio(pcfg)
+                exchange_portfolios.append(ep)
+            log.info(
+                'multi_exchange_mode',
+                exchanges=[ep.name for ep in exchange_portfolios],
+            )
+        else:
+            # Single-exchange: wrap current config in one portfolio
+            single_config = PortfolioConfig(
+                exchange=self._config.exchange,
+                pairs=self._config.trading.pairs,
+                quote_currency='USDT',
+                budget_amount=self._config.budget.amount_usdt,
+                max_positions=self._config.trading.max_open_positions,
+            )
+            ep = await self._build_exchange_portfolio(single_config)
+            exchange_portfolios.append(ep)
+
+        self._multi = MultiExchangeManager(
+            exchange_portfolios,
+            max_global_positions=sum(
+                ep.config.max_positions for ep in exchange_portfolios
             ),
         )
-        self._multi = MultiExchangeManager(
-            [single_ep],
-            max_global_positions=self._config.trading.max_open_positions,
-        )
+        await self._multi.initialize_all()
+
+        # Keep references to primary exchange for backward compat
+        primary = exchange_portfolios[0]
+        self._client = primary.client
+        self._portfolio = primary.tracker
+        self._budget_manager = primary.budget
+        self._executor = primary.executor
+        self._data_provider = primary.data_provider
 
         # 10. Strategy — selected via config.trading.strategy, params from TOML
         self._strategy = create_strategy(
@@ -429,60 +398,73 @@ class TradingAgent:
                 risk_config=self._config.risk,
             )
 
-        # Filter pairs by market quality (volume, spread, blacklist)
+        # Iterate over each exchange portfolio
+        for ex_name, portfolio in self._multi.portfolios.items():
+            if self._state != AgentState.RUNNING:
+                break
+            await self._evaluate_portfolio(
+                ex_name, portfolio, current_prices,
+            )
+
+        # Log periodic status
+        if self._multi and len(self._multi.exchanges) > 1:
+            status = self._multi.get_aggregate_status()
+            log.info(
+                'iteration_complete',
+                total_positions=status['total_positions'],
+                total_pnl=status['total_pnl'],
+                exchanges=len(status['exchanges']),
+            )
+        else:
+            log.info(
+                'iteration_complete',
+                open_positions=self._portfolio.open_trade_count,
+                budget_deployed=str(self._budget_manager.capital_deployed),
+                budget_remaining=str(self._budget_manager.budget_remaining),
+                daily_pnl=str(self._budget_manager.daily_pnl),
+                period_pnl=str(self._budget_manager.realized_pnl),
+            )
+
+    async def _evaluate_portfolio(
+        self, ex_name: str, portfolio: object, current_prices: dict,
+    ) -> None:
+        """Evaluate strategy for one exchange portfolio's pairs."""
+        client = portfolio.client
+        tracker = portfolio.tracker
+        dp = portfolio.data_provider
+        pairs = portfolio.config.pairs
+
+        # Filter pairs by market quality
         tickers = {}
-        for pair in self._config.trading.pairs:
+        for pair in pairs:
             price = current_prices.get(pair)
             if price:
                 try:
-                    tickers[pair] = await self._client.get_ticker(pair)
+                    tickers[pair] = await client.get_ticker(pair)
                 except Exception:
                     pass
-        eligible_pairs = self._market_selector.filter_pairs(
-            self._config.trading.pairs, tickers,
-        )
+        eligible_pairs = self._market_selector.filter_pairs(pairs, tickers)
 
-        # Update volatility circuit breaker from reference pair
-        if self._volatility_cb and self._config.risk.volatility_reference_pair:
-            ref = self._config.risk.volatility_reference_pair
-            try:
-                ref_df = await self._data_provider.get_dataframe(
-                    ref, self._config.trading.timeframe,
-                )
-                if 'close' in ref_df.columns and len(ref_df) > 1:
-                    import ta.volatility
-                    atr = ta.volatility.AverageTrueRange(
-                        ref_df['high'], ref_df['low'], ref_df['close'],
-                        window=self._config.risk.volatility_lookback_candles,
-                    )
-                    atr_values = atr.average_true_range().dropna().tolist()
-                    self._volatility_cb.update_volatility(atr_values)
-            except Exception:
-                log.debug('volatility_cb_update_failed', ref=ref)
-
-        # Fetch candle data for eligible pairs
-        dataframes = await self._data_provider.get_dataframes(
+        # Fetch candle data
+        dataframes = await dp.get_dataframes(
             eligible_pairs,
             timeframe=self._config.trading.timeframe,
             limit=max(100, self._strategy.required_candle_count + 10),
         )
 
-        # Fetch higher-timeframe data for multi-TF confirmation (#97)
+        # HTF confirmation
         htf_all: dict = {}
         conf_tfs = self._config.trading.confirmation_timeframes
         if conf_tfs:
-            htf_all = await self._data_provider.get_htf_dataframes(
-                eligible_pairs, conf_tfs, limit=60,
-            )
+            htf_all = await dp.get_htf_dataframes(eligible_pairs, conf_tfs, limit=60)
 
-        # Fetch regime-timeframe data if HMM regime detection is enabled
+        # HMM regime (shared across exchanges)
         regime_dfs: dict = {}
         if self._hmm_regime:
             regime_tf = self._config.trading.regime_timeframe
-            regime_dfs = await self._data_provider.get_dataframes(
+            regime_dfs = await dp.get_dataframes(
                 eligible_pairs, timeframe=regime_tf, limit=60,
             )
-            # Auto-train HMM on first call with sufficient data
             if not self._hmm_regime.is_trained and regime_dfs:
                 first_pair = next(iter(regime_dfs))
                 if len(regime_dfs[first_pair]) >= 200:
@@ -491,7 +473,7 @@ class TradingAgent:
                     except Exception:
                         log.warning('hmm_auto_train_failed', exc_info=True)
 
-        # Fetch macro features (cached, async, degrades gracefully)
+        # Macro features (shared, cached)
         macro_features = await self._macro_provider.get_macro_features()
         macro_dict = {
             'dxy_zscore': macro_features.dxy_zscore,
@@ -503,25 +485,24 @@ class TradingAgent:
             'is_event_window': macro_features.is_event_window,
         }
 
-        # -- Quant Layer 4: VPIN from 1-minute candles (per-pair) --
+        # VPIN from 1-min candles
         from nct.quant.microstructure import compute_vpin
         vpin_data: dict[str, float] = {}
         for pair in eligible_pairs:
             try:
-                df_1m = await self._data_provider.get_dataframe(
-                    pair, timeframe='1m', limit=300,
-                )
+                df_1m = await dp.get_dataframe(pair, timeframe='1m', limit=300)
                 if len(df_1m) >= 50:
                     vpin_result = compute_vpin(df_1m)
                     vpin_data[pair] = vpin_result.vpin
             except Exception:
-                log.debug('vpin_fetch_failed', pair=pair)
+                pass
 
-        # -- Quant Layer 5: Transfer Entropy (cross-pair lead-lag) --
+        # Transfer Entropy (cross-pair)
+        import numpy as np
+
         from nct.quant.information import compute_lead_lag_network
         te_data: dict[str, dict[str, float | bool]] = {}
         try:
-            import numpy as np
             returns_dict: dict[str, np.ndarray] = {}
             for pair, df in dataframes.items():
                 close = df['close'].astype(float).values
@@ -533,52 +514,51 @@ class TradingAgent:
                     for pair in returns_dict:
                         te_data[pair] = {
                             'te_inflow': network.follower_scores.get(pair, 0.0),
-                            'te_outflow': network.leader_score if pair == network.leader else 0.0,
+                            'te_outflow': (
+                                network.leader_score if pair == network.leader else 0.0
+                            ),
                             'is_leader': pair == network.leader,
                         }
         except Exception:
-            log.debug('te_computation_failed', exc_info=True)
+            log.debug('te_computation_failed', exchange=ex_name)
 
-        # Evaluate strategy for each pair
+        # Evaluate each pair
         for pair, df in dataframes.items():
             if self._state != AgentState.RUNNING:
                 break
 
-            # Skip if we already have a position in this pair
-            if self._portfolio.has_open_trade(pair):
+            if tracker.has_open_trade(pair):
                 continue
 
-            # HMM regime-based strategy selection
+            # Cross-exchange guard
+            can_open, reason = self._multi.can_open_position(ex_name, pair)
+            if not can_open:
+                log.debug('cross_exchange_blocked', pair=pair, exchange=ex_name, reason=reason)
+                continue
+
+            # HMM regime strategy selection
             active_strategy = self._strategy
             if self._hmm_regime and self._hmm_regime.is_trained and pair in regime_dfs:
                 hmm_result = self._hmm_regime.predict(regime_dfs[pair])
                 if hmm_result:
                     strat_name = self._hmm_regime_map.get(hmm_result.regime.value, '')
                     if not strat_name:
-                        log.info('regime_skip_pair', pair=pair, regime=hmm_result.regime.value)
                         continue
                     if strat_name in self._regime_strategies:
                         active_strategy = self._regime_strategies[strat_name]
-                    log.debug(
-                        'hmm_regime_classified',
-                        pair=pair,
-                        regime=hmm_result.regime.value,
-                        bull_prob=round(hmm_result.bull_prob, 2),
-                        bear_prob=round(hmm_result.bear_prob, 2),
-                        strategy=active_strategy.name,
-                    )
 
-            # Funding rate (perpetual exchanges only — returns None for spot)
+            # Funding rate
             funding_rate = None
             try:
-                funding_rate = await self._client.get_funding_rate(pair)
+                funding_rate = await client.get_funding_rate(pair)
             except Exception:
                 pass
 
-            # Build rich metadata with ALL quant layers
+            # Build rich metadata
             pair_te = te_data.get(pair, {})
             metadata = {
                 'pair': pair,
+                'exchange': ex_name,
                 'macro': macro_dict,
                 'vpin': vpin_data.get(pair),
                 'te_inflow': pair_te.get('te_inflow'),
@@ -587,26 +567,131 @@ class TradingAgent:
                 'funding_rate': funding_rate,
             }
 
-            # Run strategy with optional HTF data
             htf_data = htf_all.get(pair) if htf_all else None
             result = active_strategy.evaluate(df, metadata, htf_data=htf_data)
 
             if result.signal == Signal.HOLD:
                 continue
 
-            if result.signal == Signal.BUY:
-                await self._try_open_trade(pair, result, current_prices, side='buy')
-            elif result.signal == Signal.SELL:
-                await self._try_open_trade(pair, result, current_prices, side='sell')
+            side = 'buy' if result.signal == Signal.BUY else 'sell'
+            await self._try_open_trade_on(
+                ex_name, portfolio, pair, result, current_prices, side=side,
+            )
 
-        # Log periodic status
+    async def _try_open_trade_on(
+        self,
+        ex_name: str,
+        portfolio: object,
+        pair: str,
+        result: object,
+        current_prices: dict,
+        side: str = 'buy',
+    ) -> None:
+        """Open a trade on a specific exchange portfolio."""
+        from decimal import Decimal
+
+        price = current_prices.get(pair)
+        if not price:
+            return
+
+        quote = pair.split('-')[-1] if '-' in pair else portfolio.config.quote_currency
+        try:
+            balances = await portfolio.client.get_balance(quote)
+            matching = [b for b in balances if b.currency == quote]
+            available = matching[0].available if matching else Decimal(0)
+        except Exception:
+            available = Decimal(0)
+
+        if available <= 0:
+            available = portfolio.budget.budget_remaining
+
+        # Risk check (shared risk manager, but uses this portfolio's budget/tracker)
+        decision = self._risk_manager.evaluate_trade(
+            inst_id=pair,
+            side=side,
+            current_price=price,
+            available_balance=available,
+            signal_confidence=result.confidence,
+            open_position_count=portfolio.tracker.open_trade_count,
+        )
+
+        if not decision.approved:
+            return
+
+        trade = await portfolio.executor.execute_trade(
+            inst_id=pair,
+            decision=decision,
+            strategy_name=self._strategy.name,
+            signal_confidence=result.confidence,
+        )
+
+        if trade and self._notifier:
+            await self._notifier.notify_trade_opened(
+                inst_id=pair,
+                side=side,
+                size=decision.size,
+                entry_price=trade.entry_price,
+                stop_loss=decision.stop_loss_price,
+                take_profit=decision.take_profit_price,
+            )
+
+    async def _build_exchange_portfolio(self, pcfg: object) -> object:
+        """Create all components for one exchange from its PortfolioConfig."""
+        from nct.portfolio.multi_exchange import ExchangePortfolio
+
+        # Build a temporary AppConfig-like object for the exchange factory
+        exchange_config = self._config.model_copy()
+        exchange_config.exchange = pcfg.exchange
+
+        client = create_exchange_client(exchange_config)
+
+        # Validate connection
+        creds_map = {
+            'okx': self._config.okx,
+            'bybit': self._config.bybit,
+            'coinbase': self._config.coinbase,
+            'hyperliquid': self._config.hyperliquid,
+        }
+        creds = creds_map.get(pcfg.exchange)
+        if creds and creds.api_key:
+            try:
+                await client.validate_connection()
+            except Exception:
+                log.warning('exchange_connection_failed', exchange=pcfg.exchange)
+
+        # Per-exchange budget config (use portfolio's budget_amount)
+        budget_cfg = self._config.budget.model_copy()
+        budget_cfg.amount_usdt = pcfg.budget_amount
+
+        tracker = PortfolioTracker(client, self._db, exchange=pcfg.exchange)
+        budget = BudgetManager(budget_cfg, self._db, exchange=pcfg.exchange)
+        data_provider = DataProvider(
+            client, cache_ttl_seconds=self._config.trading.poll_interval_seconds,
+        )
+        executor = OrderExecutor(
+            client=client,
+            portfolio=tracker,
+            budget_manager=budget,
+            protection_manager=self._protection_manager,
+            db=self._db,
+        )
+
         log.info(
-            'iteration_complete',
-            open_positions=self._portfolio.open_trade_count,
-            budget_deployed=str(self._budget_manager.capital_deployed),
-            budget_remaining=str(self._budget_manager.budget_remaining),
-            daily_pnl=str(self._budget_manager.daily_pnl),
-            period_pnl=str(self._budget_manager.realized_pnl),
+            'exchange_portfolio_created',
+            exchange=pcfg.exchange,
+            pairs=pcfg.pairs,
+            quote=pcfg.quote_currency,
+            budget=str(pcfg.budget_amount),
+        )
+
+        return ExchangePortfolio(
+            name=pcfg.exchange,
+            config=pcfg,
+            client=client,
+            tracker=tracker,
+            budget=budget,
+            executor=executor,
+            data_provider=data_provider,
         )
 
     async def _try_open_trade(
@@ -674,26 +759,31 @@ class TradingAgent:
             )
 
     async def _get_current_prices(self) -> dict:
-        """Get current prices for all configured pairs."""
+        """Get current prices for all pairs across all exchanges."""
         from decimal import Decimal
 
         prices: dict[str, Decimal] = {}
 
         # Try WebSocket cache first
         if self._market_feed:
-            for pair in self._config.trading.pairs:
+            all_pairs = set()
+            for p in self._multi.portfolios.values():
+                all_pairs.update(p.config.pairs)
+            for pair in all_pairs:
                 ticker = self._market_feed.get_latest_ticker(pair)
                 if ticker:
                     prices[pair] = ticker.last
 
-        # Fall back to REST for any missing prices
-        missing = [p for p in self._config.trading.pairs if p not in prices]
-        for pair in missing:
-            try:
-                ticker = await self._client.get_ticker(pair)
-                prices[pair] = ticker.last
-            except ExchangeError:
-                log.warning('ticker_fetch_failed', pair=pair)
+        # Fall back to REST for any missing prices across all exchanges
+        for ex_name, portfolio in self._multi.portfolios.items():
+            for pair in portfolio.config.pairs:
+                if pair in prices:
+                    continue
+                try:
+                    ticker = await portfolio.client.get_ticker(pair)
+                    prices[pair] = ticker.last
+                except ExchangeError:
+                    log.warning('ticker_fetch_failed', pair=pair, exchange=ex_name)
 
         return prices
 
