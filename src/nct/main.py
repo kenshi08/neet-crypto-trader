@@ -215,6 +215,18 @@ class TradingAgent:
         self._executor = primary.executor
         self._data_provider = primary.data_provider
 
+        # Risk manager (shared, stateless logic — uses primary portfolio for
+        # correlation checks, but _try_open_trade_on passes per-exchange counts)
+        self._risk_manager = RiskManager(
+            budget_manager=self._budget_manager,
+            position_sizer=self._position_sizer,
+            protection_manager=self._protection_manager,
+            risk_config=self._config.risk,
+            trading_config=self._config.trading,
+            portfolio=self._portfolio,
+            supports_shorting=self._client.supports_shorting,
+        )
+
         # 10. Strategy — selected via config.trading.strategy, params from TOML
         self._strategy = create_strategy(
             self._config.trading.strategy,
