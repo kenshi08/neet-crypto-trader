@@ -13,3 +13,21 @@ services:
     dns:
       - 1.1.1.1
       - 8.8.8.8
+
+  pipeline:
+    build: .
+    container_name: nct-pipeline
+    restart: "no"
+    entrypoint: ["python", "scripts/auto_pipeline.py"]
+    env_file: .env
+    volumes:
+      - ./config:/app/config:ro
+      - ./data:/app/data
+      - ./logs:/app/logs
+    mem_limit: 1g
+    cpus: 1.0
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    profiles:
+      - pipeline
