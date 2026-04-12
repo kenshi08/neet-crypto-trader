@@ -215,6 +215,77 @@ class CooldownPeriod(IProtection):
 
 
 # ---------------------------------------------------------------------------
+# VolatilityCircuitBreaker — halt when market volatility spikes
+# ---------------------------------------------------------------------------
+
+
+class VolatilityCircuitBreaker(IProtection):
+    """Halts all trading when market volatility exceeds a threshold.
+
+    Compares current ATR to the median ATR over a lookback window.
+    If current ATR > multiplier * median ATR, trading is locked.
+    """
+
+    def __init__(
+        self,
+        *,
+        multiplier: float = 3.0,
+        lookback_candles: int = 20,
+    ) -> None:
+        self._multiplier = multiplier
+        self._lookback = lookback_candles
+        self._is_tripped = False
+        self._trip_reason = ''
+
+    def update_volatility(self, atr_series: list[float]) -> None:
+        """Update circuit breaker state from ATR values.
+
+        Call this periodically with the latest ATR series for the reference pair.
+        """
+        if len(atr_series) < self._lookback:
+            self._is_tripped = False
+            return
+
+        recent = atr_series[-self._lookback:]
+        sorted_atr = sorted(recent)
+        median_atr = sorted_atr[len(sorted_atr) // 2]
+        current_atr = atr_series[-1]
+
+        if median_atr <= 0:
+            self._is_tripped = False
+            return
+
+        ratio = current_atr / median_atr
+        if ratio > self._multiplier:
+            self._is_tripped = True
+            self._trip_reason = (
+                f'VolatilityCircuitBreaker: ATR {current_atr:.2f} = '
+                f'{ratio:.1f}x median ({median_atr:.2f}), '
+                f'threshold {self._multiplier:.1f}x'
+            )
+            log.warning('volatility_circuit_breaker_tripped', ratio=f'{ratio:.1f}x')
+        else:
+            if self._is_tripped:
+                log.info('volatility_circuit_breaker_reset', ratio=f'{ratio:.1f}x')
+            self._is_tripped = False
+            self._trip_reason = ''
+
+    def check(self, *, pair: str, now: datetime | None = None) -> LockResult:
+        if self._is_tripped:
+            return LockResult(locked=True, reason=self._trip_reason)
+        return LockResult(locked=False)
+
+    def record_trade_close(
+        self, *, pair: str, pnl: Decimal, was_stop_loss: bool, closed_at: datetime,
+    ) -> None:
+        pass  # No state update needed on trade close
+
+    def reset(self) -> None:
+        self._is_tripped = False
+        self._trip_reason = ''
+
+
+# ---------------------------------------------------------------------------
 # ProtectionManager — chains all protections
 # ---------------------------------------------------------------------------
 

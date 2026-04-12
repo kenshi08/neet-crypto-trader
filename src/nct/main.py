@@ -28,11 +28,13 @@ from nct.risk.protections import (
     MaxDrawdown,
     ProtectionManager,
     StoplossGuard,
+    VolatilityCircuitBreaker,
 )
 from nct.risk.risk_manager import RiskManager
 from nct.runtime_mode import RunningMode, describe, detect_mode
 from nct.strategy.base import IStrategy, Signal
 from nct.strategy.data_provider import DataProvider
+from nct.strategy.market_selector import MarketSelector
 from nct.strategy.factory import create_strategy
 
 log = structlog.get_logger()
@@ -135,7 +137,7 @@ class TradingAgent:
         )
 
         # 6. Protection plugins
-        self._protection_manager = ProtectionManager([
+        protections: list = [
             StoplossGuard(
                 trade_limit=4,
                 lookback_seconds=3600,
@@ -145,20 +147,40 @@ class TradingAgent:
                 max_drawdown_usdt=self._config.budget.daily_loss_limit_usdt,
             ),
             CooldownPeriod(cooldown_seconds=300),
-        ])
+        ]
 
-        # 7. Risk manager
+        # Volatility circuit breaker (optional)
+        self._volatility_cb: VolatilityCircuitBreaker | None = None
+        if self._config.risk.volatility_circuit_breaker_multiplier > 0:
+            self._volatility_cb = VolatilityCircuitBreaker(
+                multiplier=self._config.risk.volatility_circuit_breaker_multiplier,
+                lookback_candles=self._config.risk.volatility_lookback_candles,
+            )
+            protections.append(self._volatility_cb)
+
+        self._protection_manager = ProtectionManager(protections)
+
+        # 6b. Market selector
+        ms_cfg = self._config.market_selection
+        self._market_selector = MarketSelector(
+            min_volume_usdt=ms_cfg.min_volume_usdt,
+            max_spread_pct=ms_cfg.max_spread_pct,
+            blacklist=ms_cfg.blacklist,
+        )
+
+        # 7. Portfolio tracker
+        self._portfolio = PortfolioTracker(self._client, self._db)
+        await self._portfolio.initialize()
+
+        # 8. Risk manager (needs portfolio for correlation checks)
         self._risk_manager = RiskManager(
             budget_manager=self._budget_manager,
             position_sizer=self._position_sizer,
             protection_manager=self._protection_manager,
             risk_config=self._config.risk,
             trading_config=self._config.trading,
+            portfolio=self._portfolio,
         )
-
-        # 8. Portfolio tracker
-        self._portfolio = PortfolioTracker(self._client, self._db)
-        await self._portfolio.initialize()
 
         # 9. Order executor
         self._executor = OrderExecutor(
@@ -301,9 +323,40 @@ class TradingAgent:
                 current_prices=current_prices,
             )
 
-        # Fetch candle data for all pairs
+        # Filter pairs by market quality (volume, spread, blacklist)
+        tickers = {}
+        for pair in self._config.trading.pairs:
+            price = current_prices.get(pair)
+            if price:
+                try:
+                    tickers[pair] = await self._client.get_ticker(pair)
+                except Exception:
+                    pass
+        eligible_pairs = self._market_selector.filter_pairs(
+            self._config.trading.pairs, tickers,
+        )
+
+        # Update volatility circuit breaker from reference pair
+        if self._volatility_cb and self._config.risk.volatility_reference_pair:
+            ref = self._config.risk.volatility_reference_pair
+            try:
+                ref_df = await self._data_provider.get_dataframe(
+                    ref, self._config.trading.timeframe,
+                )
+                if 'close' in ref_df.columns and len(ref_df) > 1:
+                    import ta.volatility
+                    atr = ta.volatility.AverageTrueRange(
+                        ref_df['high'], ref_df['low'], ref_df['close'],
+                        window=self._config.risk.volatility_lookback_candles,
+                    )
+                    atr_values = atr.average_true_range().dropna().tolist()
+                    self._volatility_cb.update_volatility(atr_values)
+            except Exception:
+                log.debug('volatility_cb_update_failed', ref=ref)
+
+        # Fetch candle data for eligible pairs
         dataframes = await self._data_provider.get_dataframes(
-            self._config.trading.pairs,
+            eligible_pairs,
             timeframe=self._config.trading.timeframe,
             limit=max(100, self._strategy.required_candle_count + 10),
         )

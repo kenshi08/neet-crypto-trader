@@ -118,6 +118,7 @@ class BudgetConfig(BaseModel):
     max_gain_pct: Decimal = Decimal('15.0')
     max_position_pct: Decimal = Decimal('20.0')
     daily_loss_limit_usdt: Decimal = Decimal('100')
+    daily_notional_cap_usdt: Decimal = Decimal('0')  # 0 = disabled
 
     @field_validator(
         'amount_usdt',
@@ -135,6 +136,17 @@ class BudgetConfig(BaseModel):
 # ---------------------------------------------------------------------------
 # Risk configuration
 # ---------------------------------------------------------------------------
+class MarketSelectionConfig(BaseModel):
+    min_volume_usdt: Decimal = Decimal('0')
+    max_spread_pct: Decimal = Decimal('0')
+    blacklist: list[str] = Field(default_factory=list)
+
+    @field_validator('min_volume_usdt', 'max_spread_pct', mode='before')
+    @classmethod
+    def _coerce_to_decimal(cls, v: object) -> Decimal:
+        return Decimal(str(v))
+
+
 class RiskConfig(BaseModel):
     stop_loss_pct: Decimal = Decimal('3.0')
     take_profit_pct: Decimal = Decimal('5.0')
@@ -143,6 +155,11 @@ class RiskConfig(BaseModel):
     trailing_stop_activation_pct: Decimal = Decimal('2.0')
     trailing_stop_delta_pct: Decimal = Decimal('1.0')
     min_signal_confidence: float = 0.6
+    correlation_groups: dict[str, list[str]] = Field(default_factory=dict)
+    max_correlated_positions: int = 2
+    volatility_circuit_breaker_multiplier: float = 0.0  # 0 = disabled
+    volatility_lookback_candles: int = 20
+    volatility_reference_pair: str = ''
 
     @field_validator(
         'stop_loss_pct',
@@ -198,6 +215,7 @@ class AppConfig(BaseModel):
     trading: TradingConfig = Field(default_factory=TradingConfig)
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
     risk: RiskConfig = Field(default_factory=RiskConfig)
+    market_selection: MarketSelectionConfig = Field(default_factory=MarketSelectionConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     strategy_params: dict = Field(default_factory=dict)
 
@@ -230,6 +248,7 @@ def load_config(config_path: Path | None = None) -> AppConfig:
     trading = TradingConfig(**toml_data.get('trading', {}))
     budget = BudgetConfig(**toml_data.get('budget', {}))
     risk = RiskConfig(**toml_data.get('risk', {}))
+    market_selection = MarketSelectionConfig(**toml_data.get('market_selection', {}))
 
     strategy_params = toml_data.get('strategy', {}).get(trading.strategy, {})
 
@@ -237,6 +256,7 @@ def load_config(config_path: Path | None = None) -> AppConfig:
         exchange=exchange_selector.exchange,
         okx=okx, bybit=bybit, coinbase=coinbase,
         trading=trading, budget=budget, risk=risk,
+        market_selection=market_selection,
         telegram=telegram, strategy_params=strategy_params,
     )
 
