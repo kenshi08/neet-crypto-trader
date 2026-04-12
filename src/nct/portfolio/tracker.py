@@ -1,4 +1,4 @@
-"""Portfolio tracker — open positions, P&L, OKX synchronization."""
+"""Portfolio tracker — open positions, P&L, multi-exchange reconciliation."""
 
 from __future__ import annotations
 

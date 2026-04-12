@@ -355,6 +355,10 @@ def load_config(config_path: Path | None = None) -> AppConfig:
 
     strategy_params = toml_data.get('strategy', {}).get(trading.strategy, {})
 
+    # Parse [[portfolios]] for multi-exchange mode
+    raw_portfolios = toml_data.get('portfolios', [])
+    portfolios = [PortfolioConfig(**p) for p in raw_portfolios]
+
     config = AppConfig(
         exchange=exchange_selector.exchange,
         okx=okx, bybit=bybit, coinbase=coinbase,
@@ -362,6 +366,7 @@ def load_config(config_path: Path | None = None) -> AppConfig:
         trading=trading, budget=budget, risk=risk,
         market_selection=market_selection,
         telegram=telegram, strategy_params=strategy_params,
+        portfolios=portfolios,
     )
 
     creds_map = {

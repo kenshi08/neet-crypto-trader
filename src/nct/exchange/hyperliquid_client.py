@@ -156,6 +156,20 @@ class HyperliquidClient(IExchange):
     # Market data
     # ===================================================================
 
+    async def get_funding_rate(self, inst_id: str) -> float | None:
+        """Get current funding rate from Hyperliquid perps."""
+        try:
+            self._ensure_sdk()
+            coin = _to_hl_coin(inst_id)
+            async with self._market_limiter:
+                meta = self._info.meta()
+            for asset in meta.get('universe', []):
+                if asset['name'] == coin:
+                    return float(asset.get('funding', 0))
+        except Exception:
+            log.debug('hl_funding_rate_failed', inst_id=inst_id)
+        return None
+
     @retrier
     async def get_ticker(self, inst_id: str) -> Ticker:
         self._ensure_sdk()

@@ -46,6 +46,15 @@ class IExchange(ABC):
         """
         return False
 
+    async def get_funding_rate(self, inst_id: str) -> float | None:
+        """Get current funding rate for a perpetual instrument.
+
+        Returns the hourly funding rate as a float (e.g., 0.0003 = 0.03%/hr),
+        or None if the exchange doesn't support funding rates (spot-only).
+        Override in exchanges that support perpetual futures.
+        """
+        return None
+
     # ===================================================================
     # Market data
     # ===================================================================

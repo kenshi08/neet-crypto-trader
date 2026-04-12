@@ -1,6 +1,6 @@
 """Composite strategy — runs all 4 TA strategies as feature generators + quant stack.
 
-All 8 layers are evaluated per candle:
+Layers 0-8 are evaluated per candle:
 
   Layer 0: Run ALL 4 TA strategies (momentum, mean_reversion, trend_following,
            volatility_breakout) -> extract signal + confidence as features

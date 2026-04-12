@@ -109,3 +109,32 @@ lookback = 50                   # Rolling window for z-score computation
 delta = 0.0001                  # Kalman process noise (how fast hedge ratio adapts)
 min_half_life = 2.0             # Min OU half-life to confirm mean-reversion
 max_half_life = 100.0           # Max OU half-life (above = not mean-reverting)
+
+# ===========================================================================
+# Multi-exchange portfolios (optional)
+# ===========================================================================
+# When [[portfolios]] entries are present, the bot runs in multi-exchange mode.
+# Each portfolio gets its own exchange client, position tracker, and budget.
+# All portfolios share the composite quant strategy and cross-exchange guards.
+# Uncomment and configure to enable.
+
+# [[portfolios]]
+# exchange = "hyperliquid"
+# pairs = ["BTC-USDT", "ETH-USDT"]
+# quote_currency = "USDC"
+# budget_amount = 200
+# max_positions = 2
+
+# [[portfolios]]
+# exchange = "okx"
+# pairs = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "AVAX-USDT", "LINK-USDT"]
+# quote_currency = "USDT"
+# budget_amount = 175
+# max_positions = 3
+
+# [[portfolios]]
+# exchange = "coinbase"
+# pairs = ["BTC-USD", "ETH-USD"]
+# quote_currency = "USD"
+# budget_amount = 125
+# max_positions = 2

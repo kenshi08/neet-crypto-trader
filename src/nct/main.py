@@ -256,6 +256,7 @@ class TradingAgent:
         self._hmm_regime = None
         self._regime_strategies: dict[str, IStrategy] = {}
         if self._config.trading.auto_regime_detection:
+            # Lazy import: hmmlearn is an optional dependency
             from nct.quant.regime import HMMRegimeDetector
             self._hmm_regime = HMMRegimeDetector()
             # HMM regime map: bull -> trend, bear -> trend, chop -> mean_reversion
@@ -276,7 +277,8 @@ class TradingAgent:
                 timeframe=self._config.trading.regime_timeframe,
             )
 
-        # 10c. Macro data provider (for quant metadata)
+        # 10c. Macro data provider (read-only, no cleanup needed)
+        # Lazy import: fredapi/yfinance are optional dependencies
         from nct.quant.macro import MacroDataProvider
         self._macro_provider = MacroDataProvider(
             fred_api_key=os.environ.get('FRED_API_KEY'),
@@ -501,6 +503,42 @@ class TradingAgent:
             'is_event_window': macro_features.is_event_window,
         }
 
+        # -- Quant Layer 4: VPIN from 1-minute candles (per-pair) --
+        from nct.quant.microstructure import compute_vpin
+        vpin_data: dict[str, float] = {}
+        for pair in eligible_pairs:
+            try:
+                df_1m = await self._data_provider.get_dataframe(
+                    pair, timeframe='1m', limit=300,
+                )
+                if len(df_1m) >= 50:
+                    vpin_result = compute_vpin(df_1m)
+                    vpin_data[pair] = vpin_result.vpin
+            except Exception:
+                log.debug('vpin_fetch_failed', pair=pair)
+
+        # -- Quant Layer 5: Transfer Entropy (cross-pair lead-lag) --
+        from nct.quant.information import compute_lead_lag_network
+        te_data: dict[str, dict[str, float | bool]] = {}
+        try:
+            import numpy as np
+            returns_dict: dict[str, np.ndarray] = {}
+            for pair, df in dataframes.items():
+                close = df['close'].astype(float).values
+                if len(close) > 10:
+                    returns_dict[pair] = np.diff(np.log(close))
+            if len(returns_dict) >= 2:
+                network = compute_lead_lag_network(returns_dict)
+                if network:
+                    for pair in returns_dict:
+                        te_data[pair] = {
+                            'te_inflow': network.follower_scores.get(pair, 0.0),
+                            'te_outflow': network.leader_score if pair == network.leader else 0.0,
+                            'is_leader': pair == network.leader,
+                        }
+        except Exception:
+            log.debug('te_computation_failed', exc_info=True)
+
         # Evaluate strategy for each pair
         for pair, df in dataframes.items():
             if self._state != AgentState.RUNNING:
@@ -530,10 +568,23 @@ class TradingAgent:
                         strategy=active_strategy.name,
                     )
 
-            # Build rich metadata for quant-aware strategies
+            # Funding rate (perpetual exchanges only — returns None for spot)
+            funding_rate = None
+            try:
+                funding_rate = await self._client.get_funding_rate(pair)
+            except Exception:
+                pass
+
+            # Build rich metadata with ALL quant layers
+            pair_te = te_data.get(pair, {})
             metadata = {
                 'pair': pair,
                 'macro': macro_dict,
+                'vpin': vpin_data.get(pair),
+                'te_inflow': pair_te.get('te_inflow'),
+                'te_outflow': pair_te.get('te_outflow'),
+                'is_leader': pair_te.get('is_leader', False),
+                'funding_rate': funding_rate,
             }
 
             # Run strategy with optional HTF data
