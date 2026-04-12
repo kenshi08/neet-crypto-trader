@@ -20,6 +20,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+quant = [
+    "hmmlearn>=0.3,<1",
+    "pykalman>=0.9,<1",
+    "xgboost>=2.0,<3",
+    "shap>=0.45,<1",
+    "statsmodels>=0.14,<1",
+    "fredapi>=0.5,<1",
+    "yfinance>=0.2,<1",
+    "anthropic>=0.40,<1",
+    "scikit-learn>=1.4,<2",
+]
 telegram = [
     "python-telegram-bot>=21.0,<22",
 ]
