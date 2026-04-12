@@ -246,6 +246,22 @@ class _ExchangeSelector(BaseSettings):
     exchange: Literal['okx', 'bybit', 'coinbase', 'hyperliquid'] = 'okx'
 
 
+class PortfolioConfig(BaseModel):
+    """Per-exchange portfolio configuration for multi-exchange mode."""
+
+    exchange: Literal['okx', 'bybit', 'coinbase', 'hyperliquid']
+    pairs: list[str]
+    quote_currency: str = 'USDT'           # Fund pool: USDT, USDC, USD
+    budget_amount: Decimal = Decimal('100')  # Budget in quote currency
+    max_positions: int = 2
+    enabled: bool = True
+
+    @field_validator('budget_amount', mode='before')
+    @classmethod
+    def _coerce_budget(cls, v: object) -> Decimal:
+        return Decimal(str(v))
+
+
 class AppConfig(BaseModel):
     exchange: Literal['okx', 'bybit', 'coinbase', 'hyperliquid'] = 'okx'
     okx: OKXCredentials = Field(default_factory=OKXCredentials)
@@ -258,6 +274,12 @@ class AppConfig(BaseModel):
     market_selection: MarketSelectionConfig = Field(default_factory=MarketSelectionConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     strategy_params: dict = Field(default_factory=dict)
+    # Multi-exchange portfolios. Empty = single-exchange mode (backward-compatible).
+    portfolios: list[PortfolioConfig] = Field(default_factory=list)
+
+    @property
+    def is_multi_exchange(self) -> bool:
+        return len(self.portfolios) > 0
 
 
 def validate_live_config(config: AppConfig) -> list[str]:

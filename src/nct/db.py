@@ -18,6 +18,7 @@ log = structlog.get_logger()
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS trades (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    exchange TEXT NOT NULL DEFAULT '',
     inst_id TEXT NOT NULL,
     side TEXT NOT NULL,
     size TEXT NOT NULL,
@@ -36,6 +37,7 @@ CREATE TABLE IF NOT EXISTS trades (
 
 CREATE TABLE IF NOT EXISTS budget_periods (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    exchange TEXT NOT NULL DEFAULT '',
     period_type TEXT NOT NULL,
     start_date TEXT NOT NULL,
     end_date TEXT NOT NULL,
@@ -47,10 +49,12 @@ CREATE TABLE IF NOT EXISTS budget_periods (
 
 CREATE TABLE IF NOT EXISTS daily_stats (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    date TEXT NOT NULL UNIQUE,
+    exchange TEXT NOT NULL DEFAULT '',
+    date TEXT NOT NULL,
     realized_pnl TEXT NOT NULL DEFAULT '0',
     trade_count INTEGER NOT NULL DEFAULT 0,
-    stop_loss_count INTEGER NOT NULL DEFAULT 0
+    stop_loss_count INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(exchange, date)
 );
 
 CREATE TABLE IF NOT EXISTS executor_log (
@@ -146,14 +150,16 @@ class Database:
         signal_confidence: float = 0.0,
         stop_loss_price: Decimal | None = None,
         take_profit_price: Decimal | None = None,
+        exchange: str = '',
     ) -> int:
         cursor = await self.conn.execute(
             """INSERT INTO trades
-               (inst_id, side, size, entry_price, fee, opened_at, is_dry_run,
-                strategy, signal_confidence, stop_loss_price, take_profit_price)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (exchange, inst_id, side, size, entry_price, fee, opened_at,
+                is_dry_run, strategy, signal_confidence,
+                stop_loss_price, take_profit_price)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                inst_id, side, str(size), str(entry_price), str(fee),
+                exchange, inst_id, side, str(size), str(entry_price), str(fee),
                 opened_at.isoformat(), int(is_dry_run),
                 strategy, signal_confidence,
                 str(stop_loss_price) if stop_loss_price else None,
@@ -177,20 +183,30 @@ class Database:
         )
         await self.conn.commit()
 
-    async def get_open_trades(self) -> list[dict]:
-        cursor = await self.conn.execute(
-            "SELECT * FROM trades WHERE closed_at IS NULL ORDER BY opened_at DESC"
-        )
+    async def get_open_trades(self, exchange: str = '') -> list[dict]:
+        if exchange:
+            cursor = await self.conn.execute(
+                "SELECT * FROM trades WHERE closed_at IS NULL AND exchange = ? "
+                "ORDER BY opened_at DESC",
+                (exchange,),
+            )
+        else:
+            cursor = await self.conn.execute(
+                "SELECT * FROM trades WHERE closed_at IS NULL ORDER BY opened_at DESC"
+            )
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
 
     # -- Budget period operations ---------------------------------------
 
-    async def get_active_budget_period(self, period_type: str) -> dict | None:
+    async def get_active_budget_period(
+        self, period_type: str, exchange: str = '',
+    ) -> dict | None:
         cursor = await self.conn.execute(
-            "SELECT * FROM budget_periods WHERE period_type = ? AND status = 'active' "
+            "SELECT * FROM budget_periods "
+            "WHERE period_type = ? AND exchange = ? AND status = 'active' "
             "ORDER BY start_date DESC LIMIT 1",
-            (period_type,),
+            (period_type, exchange),
         )
         row = await cursor.fetchone()
         return dict(row) if row else None
@@ -201,11 +217,12 @@ class Database:
         period_type: str,
         start_date: datetime,
         end_date: datetime,
+        exchange: str = '',
     ) -> int:
         cursor = await self.conn.execute(
-            """INSERT INTO budget_periods (period_type, start_date, end_date)
-               VALUES (?, ?, ?)""",
-            (period_type, start_date.isoformat(), end_date.isoformat()),
+            """INSERT INTO budget_periods (exchange, period_type, start_date, end_date)
+               VALUES (?, ?, ?, ?)""",
+            (exchange, period_type, start_date.isoformat(), end_date.isoformat()),
         )
         await self.conn.commit()
         return cursor.lastrowid  # type: ignore[return-value]
@@ -235,9 +252,10 @@ class Database:
 
     # -- Daily stats operations -----------------------------------------
 
-    async def get_daily_stats(self, date_str: str) -> dict | None:
+    async def get_daily_stats(self, date_str: str, exchange: str = '') -> dict | None:
         cursor = await self.conn.execute(
-            "SELECT * FROM daily_stats WHERE date = ?", (date_str,)
+            "SELECT * FROM daily_stats WHERE date = ? AND exchange = ?",
+            (date_str, exchange),
         )
         row = await cursor.fetchone()
         return dict(row) if row else None
@@ -249,16 +267,18 @@ class Database:
         realized_pnl: Decimal,
         trade_count: int,
         stop_loss_count: int,
+        exchange: str = '',
     ) -> None:
         await self.conn.execute(
-            """INSERT INTO daily_stats (date, realized_pnl, trade_count, stop_loss_count)
-               VALUES (?, ?, ?, ?)
-               ON CONFLICT(date) DO UPDATE SET
+            """INSERT INTO daily_stats
+               (exchange, date, realized_pnl, trade_count, stop_loss_count)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(exchange, date) DO UPDATE SET
                    realized_pnl = ?,
                    trade_count = ?,
                    stop_loss_count = ?""",
             (
-                date_str, str(realized_pnl), trade_count, stop_loss_count,
+                exchange, date_str, str(realized_pnl), trade_count, stop_loss_count,
                 str(realized_pnl), trade_count, stop_loss_count,
             ),
         )

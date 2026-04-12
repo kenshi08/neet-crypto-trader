@@ -20,6 +20,7 @@ class TrackedTrade:
     """A trade being tracked through its lifecycle."""
 
     trade_id: int
+    exchange: str
     inst_id: str
     side: str
     size: Decimal
@@ -52,19 +53,23 @@ class PortfolioTracker:
     Persists trade history to SQLite.
     """
 
-    def __init__(self, client: IExchange, db: Database) -> None:
+    def __init__(
+        self, client: IExchange, db: Database, *, exchange: str = '',
+    ) -> None:
         self._client = client
         self._db = db
+        self._exchange = exchange
         self._open_trades: dict[str, TrackedTrade] = {}  # keyed by inst_id
 
     async def initialize(self) -> None:
         """Load open trades from database on startup."""
-        open_trades = await self._db.get_open_trades()
+        open_trades = await self._db.get_open_trades(exchange=self._exchange)
         for row in open_trades:
             sl_price = Decimal(row['stop_loss_price']) if row.get('stop_loss_price') else None
             tp_price = Decimal(row['take_profit_price']) if row.get('take_profit_price') else None
             trade = TrackedTrade(
                 trade_id=row['id'],
+                exchange=row.get('exchange', self._exchange),
                 inst_id=row['inst_id'],
                 side=row['side'],
                 size=Decimal(row['size']),
@@ -118,10 +123,12 @@ class PortfolioTracker:
             signal_confidence=signal_confidence,
             stop_loss_price=stop_loss_price,
             take_profit_price=take_profit_price,
+            exchange=self._exchange,
         )
 
         trade = TrackedTrade(
             trade_id=trade_id,
+            exchange=self._exchange,
             inst_id=inst_id,
             side=side,
             size=size,

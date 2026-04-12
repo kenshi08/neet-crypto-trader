@@ -20,9 +20,12 @@ class BudgetManager:
     State persists to SQLite so budgets survive restarts.
     """
 
-    def __init__(self, config: BudgetConfig, db: Database) -> None:
+    def __init__(
+        self, config: BudgetConfig, db: Database, *, exchange: str = '',
+    ) -> None:
         self._config = config
         self._db = db
+        self._exchange = exchange
 
         # In-memory running totals (synced from DB on init)
         self._period_id: int | None = None
@@ -38,7 +41,9 @@ class BudgetManager:
 
     async def initialize(self) -> None:
         """Load or create budget period from database. Call once at startup."""
-        period = await self._db.get_active_budget_period(self._config.period)
+        period = await self._db.get_active_budget_period(
+            self._config.period, exchange=self._exchange,
+        )
 
         now = datetime.now(UTC)
         if period and not self._is_period_expired(period, now):
@@ -59,7 +64,7 @@ class BudgetManager:
 
         # Load daily stats
         self._current_date = now.strftime('%Y-%m-%d')
-        daily = await self._db.get_daily_stats(self._current_date)
+        daily = await self._db.get_daily_stats(self._current_date, exchange=self._exchange)
         if daily:
             self._daily_pnl = Decimal(daily['realized_pnl'])
             self._daily_trade_count = daily['trade_count']
@@ -167,7 +172,9 @@ class BudgetManager:
 
         # Period reset
         if self._period_id:
-            period = await self._db.get_active_budget_period(self._config.period)
+            period = await self._db.get_active_budget_period(
+            self._config.period, exchange=self._exchange,
+        )
             if period and self._is_period_expired(period, now):
                 await self._db.close_budget_period(self._period_id)
                 await self._start_new_period(now)
@@ -227,6 +234,7 @@ class BudgetManager:
             period_type=self._config.period,
             start_date=start,
             end_date=end,
+            exchange=self._exchange,
         )
         self._capital_deployed = Decimal(0)
         self._realized_pnl = Decimal(0)
@@ -260,4 +268,5 @@ class BudgetManager:
             realized_pnl=self._daily_pnl,
             trade_count=self._daily_trade_count,
             stop_loss_count=self._daily_stop_loss_count,
+            exchange=self._exchange,
         )
