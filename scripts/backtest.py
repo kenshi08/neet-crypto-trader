@@ -607,6 +607,10 @@ async def main() -> None:
     parser.add_argument('--timeframe', default='15m', help='Candle timeframe')
     parser.add_argument('--limit', type=int, default=300, help='Number of candles')
     parser.add_argument('--strategy', default='momentum', help='Strategy name')
+    parser.add_argument(
+        '--compare-strategies', action='store_true',
+        help='Run all 4 strategies and print comparative table (#103)',
+    )
     parser.add_argument('--sl', type=float, default=3.0, help='Stop-loss %%')
     parser.add_argument('--tp', type=float, default=5.0, help='Take-profit %%')
     parser.add_argument('--size', type=float, default=100.0, help='Position size (quote ccy)')
@@ -677,6 +681,39 @@ async def main() -> None:
         rng_seed=args.rng_seed,
         partial_fill_impact=args.partial_fill_impact,
     )
+
+    # Comparative strategy backtest (#103)
+    if args.compare_strategies:
+        all_strategies = ['momentum', 'mean_reversion', 'trend_following', 'volatility_breakout']
+        pair = pairs[0]
+        log.info('fetching_data', pair=pair, timeframe=args.timeframe, limit=args.limit)
+        df = await fetch_historical_data(client, pair, args.timeframe, args.limit)
+        log.info('data_fetched', pair=pair, candles=len(df))
+
+        print(f'\n{"=" * 70}')
+        print(f' STRATEGY COMPARISON: {pair} ({args.timeframe}, {len(df)} candles)')
+        print(f' Exchange: {args.exchange} (fee: {fee_pct}% per side)')
+        print(f'{"=" * 70}')
+        print(
+            f'{"Strategy":<22} {"Trades":>6} {"Win%":>6} {"PnL":>10} '
+            f'{"Sharpe":>7} {"MaxDD%":>7} {"PF":>6}'
+        )
+        print('-' * 70)
+
+        for strat in all_strategies:
+            kw = {**bt_kwargs, 'strategy_name': strat}
+            r = run_backtest(df, **kw)
+            wins = sum(1 for t in r.trades if t.pnl > 0)
+            win_pct = (wins / r.total_trades * 100) if r.total_trades > 0 else 0
+            pf = abs(r.total_pnl / r.total_fees) if r.total_fees else 0
+            print(
+                f'{strat:<22} {r.total_trades:>6} {win_pct:>5.1f}% '
+                f'{float(r.total_pnl):>+10.2f} {r.sharpe_ratio:>7.2f} '
+                f'{float(r.max_drawdown):>6.2f}% {pf:>6.2f}'
+            )
+
+        print(f'{"=" * 70}\n')
+        return
 
     results: list[BacktestResult] = []
     for pair in pairs:
