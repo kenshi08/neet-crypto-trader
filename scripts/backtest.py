@@ -512,9 +512,97 @@ _EXCHANGE_PRESETS: dict[str, dict[str, float]] = {
 _FEE_PRESETS = {k: v['fee_pct'] for k, v in _EXCHANGE_PRESETS.items()}
 
 
+def per_pair_report(results: list[BacktestResult]) -> None:
+    """Print a per-pair contribution breakdown from multiple backtest results."""
+    if not results:
+        return
+
+    print('\n' + '=' * 60)
+    print('  PER-PAIR CONTRIBUTION REPORT')
+    print('=' * 60)
+
+    total_pnl = sum(r.total_pnl for r in results)
+    print(f'  {"Pair":<14} {"Trades":>7} {"Win%":>6} {"P&L":>10} {"PF":>6} {"Contrib":>8}')
+    print('  ' + '-' * 53)
+
+    for r in sorted(results, key=lambda x: x.total_pnl, reverse=True):
+        contrib = (r.total_pnl / total_pnl * 100) if total_pnl != 0 else 0
+        print(
+            f'  {r.pair:<14} {r.total_trades:>7} {r.win_rate:>5.1f}% '
+            f'${r.total_pnl:>+9.2f} {r.profit_factor:>5.2f} {contrib:>+7.1f}%'
+        )
+
+    print('  ' + '-' * 53)
+    total_trades = sum(r.total_trades for r in results)
+    total_fees = sum(r.total_fees_paid for r in results)
+    print(f'  {"TOTAL":<14} {total_trades:>7} {"":>6} ${total_pnl:>+9.2f} {"":>6} {"100.0%":>8}')
+    print(f'  Total fees: ${total_fees:.2f}')
+    print('=' * 60 + '\n')
+
+
+def regime_report(trades: list[BacktestTrade], df: pd.DataFrame) -> None:
+    """Print per-regime performance breakdown.
+
+    Regimes are detected from SMA slope:
+    - trending_up: SMA(20) slope > 0.1% per candle
+    - trending_down: SMA(20) slope < -0.1% per candle
+    - ranging: SMA(20) slope within +/-0.1%
+    """
+    if not trades or len(df) < 25:
+        return
+
+    # Compute SMA and slope
+    sma = df['close'].rolling(20).mean()
+    slope = sma.pct_change(5) * 100  # 5-candle slope as %
+
+    def _detect_regime(idx: int) -> str:
+        if idx >= len(slope) or pd.isna(slope.iloc[idx]):
+            return 'unknown'
+        s = slope.iloc[idx]
+        if s > 0.1:
+            return 'trending_up'
+        if s < -0.1:
+            return 'trending_down'
+        return 'ranging'
+
+    # Tag each trade with regime at entry
+    regime_trades: dict[str, list[BacktestTrade]] = {}
+    for t in trades:
+        regime = _detect_regime(t.entry_idx)
+        regime_trades.setdefault(regime, []).append(t)
+
+    print('\n' + '-' * 60)
+    print('  REGIME BREAKDOWN')
+    print('  ' + '-' * 53)
+    print(f'  {"Regime":<16} {"Trades":>7} {"Win%":>6} {"P&L":>10} {"PF":>6}')
+    print('  ' + '-' * 53)
+
+    for regime in ['trending_up', 'ranging', 'trending_down', 'unknown']:
+        rtrades = regime_trades.get(regime, [])
+        if not rtrades:
+            continue
+        wins = [t for t in rtrades if t.pnl > 0]
+        total_pnl = sum(t.pnl for t in rtrades)
+        win_rate = len(wins) / len(rtrades) * 100
+        gross_profit = sum(t.pnl for t in wins) if wins else 0
+        gross_loss = abs(sum(t.pnl for t in rtrades if t.pnl <= 0))
+        pf = gross_profit / gross_loss if gross_loss > 0 else float('inf')
+        print(
+            f'  {regime:<16} {len(rtrades):>7} {win_rate:>5.1f}% '
+            f'${total_pnl:>+9.2f} {pf:>5.2f}'
+        )
+
+    print('-' * 60)
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description='Backtest trading strategies')
-    parser.add_argument('--pair', default='BTC-USDT', help='Trading pair')
+    parser.add_argument('--pair', default='BTC-USDT', help='Trading pair (single)')
+    parser.add_argument(
+        '--pairs', nargs='+', default=None,
+        help='Multiple pairs for per-pair report (e.g., --pairs BTC-USDT ETH-USDT SOL-USDT)',
+    )
+    parser.add_argument('--regime', action='store_true', help='Include regime breakdown')
     parser.add_argument('--timeframe', default='15m', help='Candle timeframe')
     parser.add_argument('--limit', type=int, default=300, help='Number of candles')
     parser.add_argument('--strategy', default='momentum', help='Strategy name')
@@ -572,18 +660,9 @@ async def main() -> None:
     config = load_config()
     client = OKXClient(config.okx)
 
-    log.info(
-        'fetching_data',
-        pair=args.pair,
-        timeframe=args.timeframe,
-        limit=args.limit,
-    )
+    pairs = args.pairs or [args.pair]
 
-    df = await fetch_historical_data(client, args.pair, args.timeframe, args.limit)
-    log.info('data_fetched', candles=len(df))
-
-    result = run_backtest(
-        df,
+    bt_kwargs = dict(
         strategy_name=args.strategy,
         stop_loss_pct=args.sl,
         take_profit_pct=args.tp,
@@ -597,10 +676,30 @@ async def main() -> None:
         rng_seed=args.rng_seed,
         partial_fill_impact=args.partial_fill_impact,
     )
-    result.pair = args.pair
-    result.timeframe = args.timeframe
 
-    print_report(result)
+    results: list[BacktestResult] = []
+    for pair in pairs:
+        log.info('fetching_data', pair=pair, timeframe=args.timeframe, limit=args.limit)
+        df = await fetch_historical_data(client, pair, args.timeframe, args.limit)
+        log.info('data_fetched', pair=pair, candles=len(df))
+
+        result = run_backtest(df, **bt_kwargs)
+        result.pair = pair
+        result.timeframe = args.timeframe
+        results.append(result)
+
+        print_report(result)
+
+        if args.regime and result.trades:
+            # Need the processed df for regime detection
+            strategy = MomentumStrategy()
+            processed = strategy.populate_indicators(df.copy(), {})
+            processed = strategy.populate_entry_trend(processed, {})
+            regime_report(result.trades, processed)
+
+    # Multi-pair contribution report
+    if len(results) > 1:
+        per_pair_report(results)
 
 
 if __name__ == '__main__':
