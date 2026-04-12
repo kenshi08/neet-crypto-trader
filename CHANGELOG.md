@@ -7,6 +7,62 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added — Live Readiness (Phases 16-22)
+
+#### Phase 22: Validation & Go-Live (#103, #104, #105)
+- `--compare-strategies` backtest flag — runs all 4 strategies, outputs comparative table
+- `config/paper-validation.toml` — 2-week validation protocol with regime detection and all features
+- `config/live-reduced.toml` — $100/week graduated go-live config with budget graduation plan
+
+#### Phase 21: Risk Management Improvements (#101, #102)
+- ATR-based volatility parity position sizing — positions sized inversely to ATR, high-vol assets get smaller positions
+- Drawdown-responsive sizing — 15% reduction per consecutive loss, floored at 40% of normal
+- New config: `use_volatility_parity`, `target_risk_pct`, `drawdown_scaling`, `drawdown_reduction_per_loss`, `drawdown_max_reduction_pct`
+- 16 new tests
+
+#### Phase 20: Regime Detection (#99, #100)
+- `RegimeClassifier` — classifies markets into 5 regimes (TRENDING_UP/DOWN, RANGING_LOW/HIGH_VOL, EXTREME_VOL)
+- Uses ADX for trend/range, +DI/-DI for direction, ATR percentile for volatility
+- Config-driven regime-to-strategy mapping — auto-selects optimal strategy per pair per iteration
+- EXTREME_VOL halts trading for the pair
+- New config: `auto_regime_detection`, `regime_timeframe`, `regime_map`
+- 14 new tests
+
+#### Phase 19: Signal Quality Improvements (#95, #96, #97, #98)
+- Fee-aware signal gate — rejects trades where TP cannot overcome round-trip fees
+- Volume confirmation added to trend_following and volatility_breakout strategies
+- Multi-timeframe confirmation — counter-trend signals get confidence halved (opt-in via `confirmation_timeframes`)
+- TTM Squeeze for volatility breakout — Bollinger Bands inside Keltner Channels detects compression (opt-in via `use_squeeze`)
+- New config: `exchange_fee_pct`, `min_profit_after_fees_pct`, `confirmation_timeframes`
+- 15 new tests
+
+#### Phase 18: Exchange Expansion (#92, #93, #94)
+- `HyperliquidClient` implementing `IExchange` — perpetual futures via `hyperliquid-python-sdk`
+- Pair translation (BTC-USDT to BTC), trigger-based SL/TP, dry-run simulation
+- `HyperliquidMarketFeed` — WebSocket real-time price streaming via SDK subscription
+- `HyperliquidCredentials` config with `HL_` env prefix
+- OKX SG documented as primary spot venue (MAS-licensed, 0.1% fees)
+- Hyperliquid added to backtest fee presets (0.045% taker)
+- 23 new tests
+
+#### Phase 17: Enable Short/Sell Signals (#90, #91)
+- Side flows from strategy Signal through RiskManager to executor — `Signal.SELL` now produces actual sell entry orders
+- Direction-aware exit management — breakeven, trailing stop, partial TP all work correctly for shorts
+- `supports_shorting` property on IExchange — Coinbase returns False, OKX/Bybit/Hyperliquid return True
+- RiskManager denies sell signals on spot-only exchanges
+- 6 new tests
+
+#### Phase 16: Critical Safety Fixes (#87, #88, #89)
+- Fixed synthetic fill-price fallback — executor re-queries exchange instead of fabricating prices
+- `get_order_detail()` added to IExchange and all exchange clients
+- Live-mode config validation — bot refuses to start in LIVE_REAL_MONEY with protections disabled
+- `config/live-conservative.toml` — opinionated safe profile for real money deployment
+- 18 new tests
+
+#### Other
+- Telegram confirmation flow for `/stop` — requires `/confirm <token>` within 60s (#47)
+- `config/comprehensive_test.toml` — exercises all 4 strategies and all features on Coinbase demo
+
 ### Added — Production Hardening (Phase 13-15)
 
 #### Phase 15: Strategy Expansion (#84, #85)

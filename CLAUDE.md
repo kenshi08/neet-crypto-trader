@@ -40,8 +40,8 @@ TelegramNotifier (inline keyboard UI, severity filtering, audit trail)
 
 ### Codebase Metrics
 
-- **Source**: ~8,800 lines across 37 files in 6 packages
-- **Tests**: 491 tests across 40 files
+- **Source**: ~10,100 lines across 39 files in 6 packages
+- **Tests**: 594 tests across 46 files
 - **Scripts**: 5 scripts (healthcheck.py added)
 - **DB tables**: 6 (trades, budget_periods, daily_stats, executor_log, trade_analytics, telegram_commands)
 
@@ -667,6 +667,21 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. **Updat
 - **Demo API keys are separate from live keys**: Must be created while in "Demo Trading" mode on OKX website. Error `50119` usually means wrong domain or demo/live key mismatch.
 - **Demo account service unreliability** (#26, #28): OKX EEA demo (`my.okx.com`) frequently returns 503/50001 on authenticated endpoints. The bot is resilient but Bybit testnet is more reliable for development.
 
+### Hyperliquid (perpetual futures — recommended for active trading)
+
+- **Type**: Decentralized perpetual futures exchange on custom L1
+- **Availability**: Accessible from Singapore, no KYC, no geo-blocking
+- **API**: `hyperliquid-python-sdk` (v0.22+). Info class for market data, Exchange class for trading.
+- **Pairs**: Bare coin names (`BTC`, `ETH`). Our client translates `BTC-USDT` ↔ `BTC`.
+- **Fees**: 0.015% maker / 0.045% taker (perps). Significantly cheaper than CEXs.
+- **Stop orders**: Native trigger orders with `tpsl='sl'` or `tpsl='tp'`, `isMarket=True`.
+- **Shorting**: Fully supported. `supports_shorting = True`.
+- **Testnet**: `https://api.hyperliquid-testnet.xyz` — set `HL_DEMO_MODE=true`.
+- **Credentials**: `HL_PRIVATE_KEY` (Ethereum wallet private key), `HL_VAULT_ADDRESS` (optional).
+- **WebSocket**: SDK `Info.subscribe({'type': 'allMids'})` for real-time prices.
+- **Size rounding**: Each asset has `szDecimals` from `meta()` — client handles rounding.
+- **Regulatory**: Gray area in Singapore. Core entities are SG-based but not MAS-licensed. DTSP regime effective June 2025.
+
 ### Adding a new exchange
 
 1. Create `src/nct/exchange/<name>_client.py` implementing `IExchange`
@@ -693,6 +708,13 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. **Updat
 13. **Execution Robustness** — Fix `get_algo_order_status()` bugs in all 3 clients, idempotency keys on retries, barrier repair backoff (#75-#78)
 14. **Observability** — Risk-adjusted metrics (Sharpe, profit factor, avg win/loss, expectancy), `/stats` enhancement, Docker health check with heartbeat (#80-#82)
 15. **Strategy Expansion** — Trend-following (EMA crossover + ADX), volatility breakout (ATR range breakout) (#84-#85)
+16. **Live Safety** — Fill-price re-query, live-mode config validation, config profiles (#87-#89)
+17. **Short/Sell Signals** — Direction-aware execution + exit management, exchange capability gating (#90-#91)
+18. **Exchange Expansion** — Hyperliquid perpetual futures client, OKX SG primary, WebSocket feed (#92-#94)
+19. **Signal Quality** — Fee-aware gate, volume confirmation, multi-timeframe filter, TTM Squeeze (#95-#98)
+20. **Regime Detection** — Market regime classifier, auto strategy rotation per pair (#99-#100)
+21. **Risk Improvements** — ATR volatility parity sizing, drawdown-responsive scaling (#101-#102)
+22. **Validation & Go-Live** — Comparative backtests, paper-trade protocol, graduated deployment (#103-#105)
 
 ## Deployment
 
@@ -741,38 +763,68 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. **Updat
 
 ## Session Handover — Latest State (2026-04-12)
 
-### What Was Done (Phases 13-15)
+### What Was Done (Phases 16-22)
 
-External ChatGPT review (8.5/10) identified gaps. After codebase exploration, many were already implemented. We addressed the **actual gaps** in 3 phases:
+Full roadmap from paper trading to live readiness. Driven by external code review, crypto strategy research (11 categories), and Singapore market analysis.
 
-**Phase 13 — Execution Robustness** (PR #79, issues #75-#78):
-- Fixed broken `get_algo_order_status()` in all 3 exchange clients (undefined attribute references)
-- Added `@retrier`, `_ensure_sdk()`, async, rate limiting to those methods
-- Added idempotency key generation on order retries (prevents duplicate orders)
-- Added exponential backoff to barrier repair (60s→480s, closes after 5 failures)
+**Phase 16 — Live Safety** (PR #106, issues #87-#89):
+- Fixed synthetic fill-price fallback — re-queries exchange instead of fabricating prices
+- Added `get_order_detail()` to IExchange and all exchange clients
+- Live-mode config validation — refuses to start with protections disabled
+- `config/live-conservative.toml` profile
 
-**Phase 14 — Observability** (PR #83, issues #80-#82):
-- `get_risk_adjusted_metrics()` in `db.py` — Sharpe, profit factor, avg win/loss, expectancy, max consecutive losses
-- `/stats` Telegram command extended with Risk Metrics section
-- Docker health check: `scripts/healthcheck.py` replaces no-op check, verifies heartbeat + DB
-- Main loop writes `data/.heartbeat` each iteration
+**Phase 17 — Short/Sell Signals** (PR #107, issues #90-#91):
+- Side flows from Signal through RiskManager to executor — `Signal.SELL` produces actual short entries
+- Direction-aware exit management (breakeven, trailing, partial TP work for shorts)
+- `supports_shorting` on IExchange — Coinbase False, OKX/Bybit/Hyperliquid True
 
-**Phase 15 — Strategy Expansion** (PR #86, issues #84-#85):
-- `TrendFollowingStrategy` — EMA crossover + ADX filter (orthogonal to momentum/mean-reversion)
-- `VolatilityBreakoutStrategy` — ATR-based N-period range breakout
-- Both registered in factory, configurable via TOML
+**Phase 18 — Exchange Expansion** (PR #108, issues #92-#94):
+- `HyperliquidClient` implementing IExchange — perpetual futures via `hyperliquid-python-sdk`
+- `HyperliquidMarketFeed` — WebSocket real-time prices via SDK subscription
+- OKX SG documented as primary spot venue (MAS-licensed, 0.1% fees)
+- Hyperliquid fee preset added to backtest (0.045%)
+
+**Phase 19 — Signal Quality** (PR #109, issues #95-#98):
+- Fee-aware signal gate — rejects trades where TP < round-trip fees + min profit
+- Volume confirmation for trend_following and volatility_breakout
+- Multi-timeframe confirmation — counter-HTF signals get confidence halved
+- TTM Squeeze for volatility_breakout — BB inside KC compression detection
+
+**Phase 20 — Regime Detection** (PR #110, issues #99-#100):
+- `RegimeClassifier` — 5 regimes via ADX + ATR percentile
+- Config-driven regime-to-strategy mapping, per-pair per-iteration
+- EXTREME_VOL halts trading for the pair
+
+**Phase 21 — Risk Improvements** (PR #111, issues #101-#102):
+- ATR-based volatility parity sizing — inverse ATR scaling
+- Drawdown-responsive sizing — 15% reduction per consecutive loss, floor at 40%
+
+**Phase 22 — Validation & Go-Live** (PR #112, issues #103-#105):
+- `--compare-strategies` backtest flag
+- `config/paper-validation.toml` — 2-week validation protocol
+- `config/live-reduced.toml` — $100/week graduated go-live
+
+**Other** (PR #113):
+- Telegram `/stop` confirmation flow (#47)
+- Hyperliquid WebSocket market feed (#93)
 
 ### Current Test Count
-- **491 tests** across 40 test files, all passing
+- **594 tests** across 46 test files, all passing
 
-### Known Remaining Gaps (from external review, not yet addressed)
+### Config Profiles Available
+- `paper-validation.toml` — 2-week validation with all features (regime, MTF, vol parity)
+- `live-reduced.toml` — $100/week graduated go-live
+- `live-conservative.toml` — ongoing live with safety defaults
+- `comprehensive_test.toml` — exercises all 4 strategies on Coinbase demo
+
+### Known Remaining Gaps
 - No UI/dashboard (acceptable for personal use)
-- Strategies not yet backtested against each other for comparative performance
 - No formal order state machine (state is implicit in TrackedTrade lifecycle)
-- Pre-existing lint warnings in `config.py`, `db.py`, `diagnostics.py`, `main.py`, `notifier.py` (long lines, import ordering) — not introduced by recent work
+- Pre-existing lint warnings in `config.py`, `db.py`, `diagnostics.py`, `main.py`, `notifier.py`
 
 ### How to Continue
 - `gh` CLI is at `"/c/Program Files/GitHub CLI/gh.exe"` (not on PATH in bash)
 - Python venv: `.venv/Scripts/python.exe`
 - Workflow: create issues → branch from `main` → implement → `pytest tests/ -x -q` → `ruff check` → commit → push → PR → merge
 - All strategy params come from `[strategy.<name>]` sections in TOML, loaded via `config.strategy_params`
+- **Next step**: Deploy `paper-validation.toml` on VPS for 2-week validation, then graduate to `live-reduced.toml`

@@ -1,21 +1,26 @@
 # neet-crypto-trader
 
-Budget-controlled crypto trading agent supporting **Coinbase**, **OKX**, and **Bybit**. Automates short-term speculative trading with strict weekly/monthly budget limits on losses and gains.
+Budget-controlled crypto trading agent supporting **Coinbase**, **OKX**, **Bybit**, and **Hyperliquid**. Automates short-term speculative trading with strict weekly/monthly budget limits on losses and gains. Supports both spot (long-only) and perpetual futures (long + short).
 
 ## Features
 
-- **Multi-exchange** — Switch between Coinbase, OKX, and Bybit via the `EXCHANGE` env var
+- **Multi-exchange** — Coinbase, OKX, Bybit, Hyperliquid via `EXCHANGE` env var. Spot and perpetual futures.
+- **Regime Detection** — Auto-classifies markets (trending/ranging/extreme) and selects optimal strategy per pair
+- **4 Strategies** — Momentum (RSI+MACD), mean reversion (Bollinger+volume), trend following (EMA+ADX), volatility breakout (ATR range+TTM Squeeze). Config-driven, auto-rotated by regime.
+- **Long + Short** — Sell signals produce actual short entries on futures exchanges. Spot-only exchanges gracefully reject shorts.
 - **Budget Controls** — Weekly/monthly capital limits, daily loss limits, daily notional cap
 - **Risk Management** — Triple barrier on every position (SL + TP + time limit), atomic entry reversal, server-side stop-losses, correlation-aware position limits, volatility circuit breaker
-- **Advanced Exits** — Trailing stop with activation threshold, breakeven stop move, partial profit taking at staged targets
+- **Smart Sizing** — ATR-based volatility parity (high-vol assets get smaller positions) + drawdown-responsive scaling (reduce size after consecutive losses)
+- **Signal Quality** — Fee-aware gate (rejects unprofitable trades), volume confirmation, multi-timeframe trend filter, TTM Squeeze detection
+- **Advanced Exits** — Trailing stop, breakeven move, partial profit taking at staged targets. Direction-aware for both longs and shorts.
+- **Live Safety** — Config validation refuses to start live with protections disabled. Fill-price re-query prevents fabricated entry prices.
 - **Paper Trading** — Demo/testnet mode by default, with unambiguous mode announcement at startup
-- **Realistic Backtests** — Fee-aware, slippage-modeled, with regime breakdown and per-pair contribution
+- **Realistic Backtests** — Fee-aware, slippage-modeled, regime breakdown, per-pair contribution, `--compare-strategies` flag
 - **Research Tooling** — Walk-forward validation, parameter stability grid search, lookahead bias checker
-- **Pluggable Strategies** — Config-driven selection: momentum (RSI+MACD), mean reversion (Bollinger), trend following (EMA+ADX), volatility breakout (ATR range)
 - **Market Selection** — Automatic pair filtering by volume, spread, and blacklist
 - **Reconciliation** — Auto-fix stale trades, verify SL/TP barriers still exist, handle partial fills
 - **Persistent State** — SQLite-backed budget tracking, trade analytics, command audit trail
-- **Telegram Bot** — Inline keyboard UI, `/why` explainability, `/signal` indicators, `/stats` performance, `/close` per-position, alert severity with quiet hours
+- **Telegram Bot** — Inline keyboard UI, `/why` explainability, `/signal` indicators, `/stats` performance, `/close` per-position, alert severity with quiet hours, `/stop` with confirmation token
 
 ## Quick Start
 
@@ -135,21 +140,19 @@ at startup. Available strategies: `momentum`, `mean_reversion`, `trend_following
 
 ## Exchange Support
 
-Behavior and guarantees differ by venue. Coinbase is the **primary** target
-(what's tested end-to-end for Singapore); OKX and Bybit are alternative
-backends with their own trade-offs.
+Behavior and guarantees differ by venue. OKX SG is the recommended spot venue;
+Hyperliquid is the recommended perpetual futures venue. Both are accessible from Singapore.
 
-| Capability              | Coinbase (primary)             | OKX                              | Bybit                          |
-|-------------------------|--------------------------------|----------------------------------|--------------------------------|
-| Singapore access        | Yes                            | Yes (with regional URL)          | Geo-blocked                    |
-| Server-side stop-loss   | `stop_limit_order_gtc_*`       | Algo orders (`conditional`)      | V5 conditional (`triggerPrice`)|
-| Server-side take-profit | `stop_limit_order_gtc_*`       | Algo orders (`conditional`)      | V5 conditional                 |
-| Atomic SL/TP reversal   | Yes (#36)                      | Yes (#36)                        | Yes (#36)                      |
-| Demo / sandbox          | Local dry-run (no public SB)   | OKX demo (`flag=1`)              | Testnet (`testnet.bybit.com`)  |
-| Real balance in demo    | No (dry-run simulates)         | Yes (OKX demo is real balance)   | Yes (testnet coins)            |
-| WebSocket market feed   | REST polling only              | Native WebSocket                 | REST polling only              |
-| Typical taker fee       | ~0.4%                          | ~0.1%                            | ~0.1%                          |
-| Quote currency          | USD / USDC                     | USDT                             | USDT                           |
+| Capability              | OKX SG (spot)          | Hyperliquid (perps)        | Coinbase               | Bybit                  |
+|-------------------------|------------------------|----------------------------|------------------------|------------------------|
+| Singapore access        | Yes (MAS-licensed)     | Yes (no KYC)               | Yes                    | Geo-blocked            |
+| Short selling           | Spot: No               | Yes (perpetual futures)    | No (spot only)         | Yes (testnet)          |
+| Server-side SL/TP       | Algo orders            | Trigger orders             | Stop-limit orders      | V5 conditional         |
+| Atomic SL/TP reversal   | Yes                    | Yes                        | Yes                    | Yes                    |
+| Demo / sandbox          | OKX demo (`flag=1`)    | Testnet API                | Local dry-run          | Testnet                |
+| WebSocket market feed   | Native WebSocket       | SDK subscription           | REST polling           | REST polling           |
+| Typical taker fee       | ~0.1%                  | ~0.045%                    | ~0.4%                  | ~0.1%                  |
+| Quote currency          | USDT                   | USDC                       | USD / USDC             | USDT                   |
 
 **Notes:**
 
@@ -182,14 +185,17 @@ src/nct/
     coinbase_client.py # Coinbase Advanced Trade (primary)
     client.py          # OKXClient (python-okx)
     bybit_client.py    # BybitClient (pybit V5)
+    hyperliquid_client.py # HyperliquidClient (perpetual futures)
+    market_feed.py     # WebSocket feeds (OKX + Hyperliquid)
     models.py          # Typed data models (Ticker, Candle, Order, Position)
   strategy/
-    base.py            # IStrategy ABC
+    base.py            # IStrategy ABC + multi-TF confirmation
     momentum.py        # RSI + MACD strategy
     mean_reversion.py  # Bollinger Bands + volume strategy
-    trend_following.py # EMA crossover + ADX trend filter
-    volatility_breakout.py # ATR-based range breakout
-    data_provider.py   # OHLCV fetching, caching
+    trend_following.py # EMA crossover + ADX + volume
+    volatility_breakout.py # ATR range + TTM Squeeze + volume
+    regime.py          # Market regime classifier (5 regimes)
+    data_provider.py   # OHLCV fetching, caching, multi-TF
     market_selector.py # Volume/spread/blacklist pair filter
   risk/
     budget_manager.py  # Budget tracking + daily notional cap
@@ -211,7 +217,7 @@ scripts/
 ## Development
 
 ```bash
-# Run tests (491 tests)
+# Run tests (594 tests)
 pytest tests/ -v
 
 # Run linter
@@ -255,7 +261,7 @@ See issue tracker for detailed deployment docs (#20).
 
 ## Roadmap
 
-All 15 phases are complete. See [GitHub Issues](https://github.com/kenshi08/neet-crypto-trader/issues) for details.
+All 22 phases are complete. See [GitHub Issues](https://github.com/kenshi08/neet-crypto-trader/issues) for details.
 
 - **Phase 1-6** — Foundation, risk engine, strategies, execution, main loop, hardening
 - **Phase 7** — Operator Intelligence: `/why`, `/signal`, `/close`, inline keyboard UI, alert severity (#44-#48, #68)
@@ -267,6 +273,13 @@ All 15 phases are complete. See [GitHub Issues](https://github.com/kenshi08/neet
 - **Phase 13** — Execution Robustness: fix `get_algo_order_status()` bugs, idempotency keys, barrier repair backoff (#75-#78)
 - **Phase 14** — Observability: risk-adjusted metrics (Sharpe, profit factor), Docker health check (#80-#82)
 - **Phase 15** — Strategy Expansion: trend-following (EMA+ADX), volatility breakout (ATR range) (#84-#85)
+- **Phase 16** — Live Safety: fill-price re-query, live-mode config validation, config profiles (#87-#89)
+- **Phase 17** — Short/Sell Signals: direction-aware execution + exit management, exchange capability gating (#90-#91)
+- **Phase 18** — Exchange Expansion: Hyperliquid perpetual futures client, OKX SG primary, WebSocket feed (#92-#94)
+- **Phase 19** — Signal Quality: fee-aware gate, volume confirmation, multi-timeframe filter, TTM Squeeze (#95-#98)
+- **Phase 20** — Regime Detection: auto-classify market conditions, per-pair strategy rotation (#99-#100)
+- **Phase 21** — Risk Improvements: ATR volatility parity sizing, drawdown-responsive scaling (#101-#102)
+- **Phase 22** — Validation & Go-Live: comparative backtests, paper-trade protocol, graduated deployment (#103-#105)
 
 ## License
 
