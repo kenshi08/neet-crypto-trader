@@ -516,6 +516,26 @@ class TelegramNotifier:
                         f'({pair_wins}/{pair_trades})'
                     )
 
+            # Risk-adjusted metrics
+            try:
+                metrics = await db.get_risk_adjusted_metrics(days=days)
+                if metrics.get('trade_count', 0) >= 2:
+                    pf = metrics['profit_factor']
+                    pf_str = '∞' if pf >= 999 else f'{pf:.2f}'
+                    lines.append('\n*Risk Metrics:*')
+                    lines.append(f'Sharpe: `{metrics["sharpe_ratio"]:.2f}`')
+                    lines.append(f'Profit factor: `{pf_str}`')
+                    lines.append(
+                        f'Avg win: `{metrics["avg_win"]:+.4f}` '
+                        f'/ Avg loss: `{metrics["avg_loss"]:+.4f}`'
+                    )
+                    lines.append(f'Expectancy: `{metrics["expectancy"]:+.4f}`')
+                    lines.append(
+                        f'Max consec losses: `{metrics["max_consecutive_losses"]}`'
+                    )
+            except Exception:
+                log.debug('risk_metrics_failed')
+
             if by_exit:
                 lines.append('\n*By Exit:*')
                 for row in by_exit[:5]:
