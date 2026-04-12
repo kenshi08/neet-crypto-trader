@@ -7,6 +7,7 @@ import structlog
 from nct.strategy.base import IStrategy
 from nct.strategy.mean_reversion import MeanReversionStrategy
 from nct.strategy.momentum import MomentumStrategy
+from nct.strategy.pairs_kalman import PairsKalmanStrategy
 from nct.strategy.trend_following import TrendFollowingStrategy
 from nct.strategy.volatility_breakout import VolatilityBreakoutStrategy
 
@@ -20,6 +21,7 @@ _STRATEGY_REGISTRY: dict[str, type[IStrategy]] = {
     'mean_reversion': MeanReversionStrategy,
     'trend_following': TrendFollowingStrategy,
     'volatility_breakout': VolatilityBreakoutStrategy,
+    'pairs_kalman': PairsKalmanStrategy,
 }
 
 
