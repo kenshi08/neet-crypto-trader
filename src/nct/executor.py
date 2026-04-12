@@ -349,6 +349,196 @@ class OrderExecutor:
 
         return closed
 
+    async def check_exit_management(
+        self,
+        *,
+        current_prices: dict[str, Decimal],
+        risk_config,
+    ) -> None:
+        """Check trailing stops, breakeven moves, and partial profit taking.
+
+        Called every iteration for all open positions.
+        """
+        for inst_id, trade in list(self._portfolio.open_trades.items()):
+            price = current_prices.get(inst_id)
+            if not price:
+                continue
+
+            # Update high-water mark
+            if trade.high_water_mark is None or price > trade.high_water_mark:
+                trade.high_water_mark = price
+
+            # Breakeven move (fires once, before trailing takes over)
+            if not trade.breakeven_applied and risk_config.breakeven_trigger_pct > 0:
+                await self._check_breakeven(trade, price, risk_config)
+
+            # Trailing stop (only if enabled and activated)
+            if risk_config.trailing_stop:
+                await self._check_trailing_stop(trade, price, risk_config)
+
+            # Partial profit taking
+            if risk_config.partial_tp:
+                await self._check_partial_tp(trade, price, risk_config)
+
+    async def _check_breakeven(self, trade: TrackedTrade, price: Decimal, risk_config) -> None:
+        """Move SL to breakeven once minimum profit is reached."""
+        if not trade.entry_price or not trade.stop_loss_price:
+            return
+
+        trigger = trade.entry_price * (1 + risk_config.breakeven_trigger_pct / 100)
+        if price < trigger:
+            return
+
+        # Breakeven = entry + estimated fees (entry_fee + estimated exit_fee)
+        fee_pct = trade.fee / (trade.size * trade.entry_price) if trade.size * trade.entry_price > 0 else Decimal(0)
+        breakeven_price = trade.entry_price * (1 + fee_pct * 2)  # cover round-trip fees
+
+        # Only move SL up, never down
+        if breakeven_price <= trade.stop_loss_price:
+            return
+
+        close_side = Side.SELL if trade.side == 'buy' else Side.BUY
+        try:
+            # Cancel old SL and place new one at breakeven
+            if trade.stop_loss_algo_id:
+                await self._client.cancel_order(trade.inst_id, trade.stop_loss_algo_id)
+            new_sl_id = await self._client.place_stop_loss(
+                inst_id=trade.inst_id, side=close_side,
+                size=trade.size, trigger_price=breakeven_price,
+            )
+            trade.stop_loss_algo_id = new_sl_id
+            trade.stop_loss_price = breakeven_price
+            trade.breakeven_applied = True
+            log.info(
+                'breakeven_applied',
+                inst_id=trade.inst_id,
+                new_sl=str(breakeven_price),
+                entry=str(trade.entry_price),
+            )
+        except Exception:
+            log.exception('breakeven_move_failed', inst_id=trade.inst_id)
+
+    async def _check_trailing_stop(self, trade: TrackedTrade, price: Decimal, risk_config) -> None:
+        """Update SL to trail behind high-water mark once activated."""
+        if not trade.entry_price or not trade.high_water_mark:
+            return
+
+        activation_price = trade.entry_price * (1 + risk_config.trailing_stop_activation_pct / 100)
+        if trade.high_water_mark < activation_price:
+            return  # Not yet activated
+
+        # Calculate trailing SL: high_water_mark - delta
+        trailing_sl = trade.high_water_mark * (1 - risk_config.trailing_stop_delta_pct / 100)
+
+        # Only ratchet up, never down
+        if trade.stop_loss_price and trailing_sl <= trade.stop_loss_price:
+            return
+
+        close_side = Side.SELL if trade.side == 'buy' else Side.BUY
+        try:
+            if trade.stop_loss_algo_id:
+                await self._client.cancel_order(trade.inst_id, trade.stop_loss_algo_id)
+            new_sl_id = await self._client.place_stop_loss(
+                inst_id=trade.inst_id, side=close_side,
+                size=trade.size, trigger_price=trailing_sl,
+            )
+            trade.stop_loss_algo_id = new_sl_id
+            trade.stop_loss_price = trailing_sl
+            log.info(
+                'trailing_stop_updated',
+                inst_id=trade.inst_id,
+                new_sl=str(trailing_sl),
+                hwm=str(trade.high_water_mark),
+            )
+        except Exception:
+            log.exception('trailing_stop_update_failed', inst_id=trade.inst_id)
+
+    async def _check_partial_tp(self, trade: TrackedTrade, price: Decimal, risk_config) -> None:
+        """Close a fraction of the position at staged profit targets."""
+        if not trade.entry_price:
+            return
+
+        if trade.partial_stages_fired is None:
+            trade.partial_stages_fired = []
+
+        for i, stage in enumerate(risk_config.partial_tp):
+            if i in trade.partial_stages_fired:
+                continue
+
+            trigger_pct = Decimal(str(stage.get('pct', 0)))
+            close_fraction = Decimal(str(stage.get('close_fraction', 0)))
+            if trigger_pct <= 0 or close_fraction <= 0:
+                continue
+
+            trigger_price = trade.entry_price * (1 + trigger_pct / 100)
+            if price < trigger_price:
+                continue
+
+            # Execute partial close
+            close_size = trade.size * close_fraction
+            if close_size <= 0:
+                continue
+
+            try:
+                close_side = Side.SELL if trade.side == 'buy' else Side.BUY
+                order_req = OrderRequest(
+                    inst_id=trade.inst_id,
+                    side=close_side,
+                    order_type=OrderType.MARKET,
+                    size=close_size,
+                    td_mode=TdMode.CASH,
+                )
+                await self._client.place_order(order_req)
+
+                # Update remaining size
+                remaining = trade.size - close_size
+                trade.size = remaining
+                trade.partial_stages_fired.append(i)
+
+                # Update SL/TP for reduced size (cancel and re-place)
+                await self._update_barriers_for_size(trade, remaining)
+
+                pnl = (price - trade.entry_price) * close_size
+                log.info(
+                    'partial_tp_fired',
+                    inst_id=trade.inst_id,
+                    stage=i,
+                    trigger_pct=str(trigger_pct),
+                    closed_size=str(close_size),
+                    remaining=str(remaining),
+                    partial_pnl=str(pnl),
+                )
+            except Exception:
+                log.exception('partial_tp_failed', inst_id=trade.inst_id, stage=i)
+
+    async def _update_barriers_for_size(self, trade: TrackedTrade, new_size: Decimal) -> None:
+        """Cancel and re-place SL/TP orders for reduced position size after partial close."""
+        close_side = Side.SELL if trade.side == 'buy' else Side.BUY
+
+        # Re-place SL
+        if trade.stop_loss_algo_id and trade.stop_loss_price:
+            try:
+                await self._client.cancel_order(trade.inst_id, trade.stop_loss_algo_id)
+                new_sl_id = await self._client.place_stop_loss(
+                    inst_id=trade.inst_id, side=close_side,
+                    size=new_size, trigger_price=trade.stop_loss_price,
+                )
+                trade.stop_loss_algo_id = new_sl_id
+            except Exception:
+                log.exception('barrier_resize_sl_failed', inst_id=trade.inst_id)
+
+        # Re-place TP
+        if trade.take_profit_algo_id and trade.take_profit_price:
+            try:
+                await self._client.cancel_order(trade.inst_id, trade.take_profit_algo_id)
+                new_tp_id = await self._client.place_take_profit(
+                    inst_id=trade.inst_id, side=close_side,
+                    size=new_size, trigger_price=trade.take_profit_price,
+                )
+                trade.take_profit_algo_id = new_tp_id
+            except Exception:
+                log.exception('barrier_resize_tp_failed', inst_id=trade.inst_id)
+
     async def verify_barriers(self) -> list[str]:
         """Verify SL/TP algo orders are still active for all open trades.
 

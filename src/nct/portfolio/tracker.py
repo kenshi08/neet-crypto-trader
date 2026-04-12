@@ -30,6 +30,10 @@ class TrackedTrade:
     stop_loss_price: Decimal | None = None
     take_profit_price: Decimal | None = None
     opened_at: datetime | None = None
+    # Trailing/breakeven/partial state (in-memory only, not persisted)
+    high_water_mark: Decimal | None = None     # highest price since entry (for trailing)
+    breakeven_applied: bool = False
+    partial_stages_fired: list[int] | None = None  # indices of fired partial TP stages
 
     @property
     def cost_usdt(self) -> Decimal:
