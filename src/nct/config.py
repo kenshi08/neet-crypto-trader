@@ -75,6 +75,25 @@ class CoinbaseCredentials(BaseSettings):
 
 
 # ---------------------------------------------------------------------------
+# Hyperliquid credentials (from .env only)
+# ---------------------------------------------------------------------------
+class HyperliquidCredentials(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix='HL_')
+
+    # Wallet private key (hex, with or without 0x prefix)
+    private_key: str = ''
+    # Testnet mode (uses api.hyperliquid-testnet.xyz)
+    demo_mode: bool = True
+    # Optional vault address for vault-based trading
+    vault_address: str = ''
+
+    @property
+    def api_key(self) -> str:
+        """Compatibility: treat private_key as api_key for mode detection."""
+        return self.private_key
+
+
+# ---------------------------------------------------------------------------
 # Trading configuration
 # ---------------------------------------------------------------------------
 class TradingConfig(BaseModel):
@@ -207,14 +226,15 @@ class _ExchangeSelector(BaseSettings):
     """Reads the EXCHANGE env var to choose which exchange to use."""
     model_config = SettingsConfigDict(env_prefix='')
 
-    exchange: Literal['okx', 'bybit', 'coinbase'] = 'okx'
+    exchange: Literal['okx', 'bybit', 'coinbase', 'hyperliquid'] = 'okx'
 
 
 class AppConfig(BaseModel):
-    exchange: Literal['okx', 'bybit', 'coinbase'] = 'okx'
+    exchange: Literal['okx', 'bybit', 'coinbase', 'hyperliquid'] = 'okx'
     okx: OKXCredentials = Field(default_factory=OKXCredentials)
     bybit: BybitCredentials = Field(default_factory=BybitCredentials)
     coinbase: CoinbaseCredentials = Field(default_factory=CoinbaseCredentials)
+    hyperliquid: HyperliquidCredentials = Field(default_factory=HyperliquidCredentials)
     trading: TradingConfig = Field(default_factory=TradingConfig)
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
     risk: RiskConfig = Field(default_factory=RiskConfig)
@@ -284,6 +304,7 @@ def load_config(config_path: Path | None = None) -> AppConfig:
     okx = OKXCredentials()
     bybit = BybitCredentials()
     coinbase = CoinbaseCredentials()
+    hyperliquid = HyperliquidCredentials()
     telegram_toml = toml_data.get('telegram', {})
     telegram = TelegramConfig(**telegram_toml)
     exchange_selector = _ExchangeSelector()
@@ -298,12 +319,16 @@ def load_config(config_path: Path | None = None) -> AppConfig:
     config = AppConfig(
         exchange=exchange_selector.exchange,
         okx=okx, bybit=bybit, coinbase=coinbase,
+        hyperliquid=hyperliquid,
         trading=trading, budget=budget, risk=risk,
         market_selection=market_selection,
         telegram=telegram, strategy_params=strategy_params,
     )
 
-    creds_map = {'okx': config.okx, 'bybit': config.bybit, 'coinbase': config.coinbase}
+    creds_map = {
+        'okx': config.okx, 'bybit': config.bybit,
+        'coinbase': config.coinbase, 'hyperliquid': config.hyperliquid,
+    }
     active_creds = creds_map[config.exchange]
 
     log.info(

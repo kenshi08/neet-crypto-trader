@@ -503,10 +503,11 @@ async def fetch_historical_data(
 # Exchange presets (#42) — fee per side + minimum notional per order.
 # Unified so --exchange can resolve both fee and min-notional from one table.
 _EXCHANGE_PRESETS: dict[str, dict[str, float]] = {
-    'coinbase': {'fee_pct': 0.4, 'min_notional_usdt': 1.0},   # Advanced Trade tier 1
-    'okx':      {'fee_pct': 0.1, 'min_notional_usdt': 1.0},   # OKX spot standard
-    'bybit':    {'fee_pct': 0.1, 'min_notional_usdt': 5.0},   # Bybit V5 spot standard
-    'binance':  {'fee_pct': 0.1, 'min_notional_usdt': 10.0},  # Binance spot standard
+    'coinbase':    {'fee_pct': 0.4,   'min_notional_usdt': 1.0},   # Advanced Trade tier 1
+    'okx':         {'fee_pct': 0.1,   'min_notional_usdt': 1.0},   # OKX SG spot standard
+    'bybit':       {'fee_pct': 0.1,   'min_notional_usdt': 5.0},   # Bybit V5 spot standard
+    'binance':     {'fee_pct': 0.1,   'min_notional_usdt': 10.0},  # Binance spot standard
+    'hyperliquid': {'fee_pct': 0.045, 'min_notional_usdt': 10.0},  # Hyperliquid perps taker
 }
 # Back-compat alias — referenced by CLAUDE.md invariant #8.
 _FEE_PRESETS = {k: v['fee_pct'] for k, v in _EXCHANGE_PRESETS.items()}

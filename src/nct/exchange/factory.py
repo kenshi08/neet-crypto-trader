@@ -34,5 +34,11 @@ def create_exchange_client(config: AppConfig) -> IExchange:
         log.info('creating_exchange_client', exchange='okx')
         return OKXClient(config.okx)
 
-    msg = f'Unknown exchange: {config.exchange!r}. Supported: okx, bybit, coinbase'
+    if config.exchange == 'hyperliquid':
+        from nct.exchange.hyperliquid_client import HyperliquidClient
+
+        log.info('creating_exchange_client', exchange='hyperliquid')
+        return HyperliquidClient(config.hyperliquid)
+
+    msg = f'Unknown exchange: {config.exchange!r}. Supported: okx, bybit, coinbase, hyperliquid'
     raise ValueError(msg)
