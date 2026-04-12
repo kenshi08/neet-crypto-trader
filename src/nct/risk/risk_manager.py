@@ -66,6 +66,8 @@ class RiskManager:
         available_balance: Decimal,
         signal_confidence: float,
         open_position_count: int,
+        current_atr: Decimal | None = None,
+        consecutive_losses: int = 0,
     ) -> TradeDecision:
         """Evaluate whether a trade should proceed.
 
@@ -103,13 +105,23 @@ class RiskManager:
                 f'>= {self._trading.max_open_positions}'
             )
 
-        # 4. Calculate position size
-        size = self._sizer.calculate_size(
-            available_balance=available_balance,
-            current_price=current_price,
-            signal_confidence=signal_confidence,
-            budget_remaining=self._budget.budget_remaining,
-        )
+        # 4. Calculate position size (ATR-based if enabled, otherwise standard)
+        if self._risk.use_volatility_parity and current_atr:
+            size = self._sizer.calculate_size_with_atr(
+                available_balance=available_balance,
+                current_price=current_price,
+                current_atr=current_atr,
+                signal_confidence=signal_confidence,
+                budget_remaining=self._budget.budget_remaining,
+                consecutive_losses=consecutive_losses,
+            )
+        else:
+            size = self._sizer.calculate_size(
+                available_balance=available_balance,
+                current_price=current_price,
+                signal_confidence=signal_confidence,
+                budget_remaining=self._budget.budget_remaining,
+            )
         if size <= 0:
             return self._deny('Position size calculated as zero')
 
