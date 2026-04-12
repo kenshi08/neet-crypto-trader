@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass
 from decimal import Decimal
@@ -109,13 +110,41 @@ class OrderExecutor:
 
         # Determine actual fill size and price (handles partial fills)
         actual_size = order_resp.filled_size if order_resp.filled_size > 0 else decision.size
-        entry_price = order_resp.avg_fill_price or decision.stop_loss_price
-        if entry_price is None or entry_price == 0:
+        entry_price = order_resp.avg_fill_price
+        fee = order_resp.fee if order_resp.fee else Decimal(0)
+
+        # Dry-run: derive entry price from SL/TP since fills are simulated
+        if (not entry_price or entry_price == 0) and order_resp.is_dry_run:
             entry_price = (
                 decision.stop_loss_price
                 + (decision.take_profit_price - decision.stop_loss_price) / 2
             )
-        fee = order_resp.fee if order_resp.fee else Decimal(0)
+
+        # Live: re-query exchange if fill price is missing (never fabricate)
+        if (not entry_price or entry_price == 0) and not order_resp.is_dry_run:
+            entry_price = await self._requery_fill_price(
+                inst_id, order_resp.order_id,
+            )
+            if not entry_price or entry_price == 0:
+                # Cannot determine fill price — reverse the entry for safety
+                log.critical(
+                    'fill_price_unknown_reversing',
+                    inst_id=inst_id,
+                    order_id=order_resp.order_id,
+                )
+                try:
+                    reverse_req = OrderRequest(
+                        inst_id=inst_id,
+                        side=Side.SELL,
+                        order_type=OrderType.MARKET,
+                        size=actual_size,
+                        td_mode=TdMode.CASH,
+                        reduce_only=True,
+                    )
+                    await self._client.place_order(reverse_req)
+                except Exception:
+                    log.exception('fill_price_reversal_failed', inst_id=inst_id)
+                return None
 
         # Handle zero fill (order rejected or fully unfilled)
         if order_resp.filled_size == Decimal(0) and not order_resp.is_dry_run:
@@ -409,6 +438,40 @@ class OrderExecutor:
             # Partial profit taking
             if risk_config.partial_tp:
                 await self._check_partial_tp(trade, price, risk_config)
+
+    # ===================================================================
+    # Fill-price re-query
+    # ===================================================================
+
+    async def _requery_fill_price(
+        self, inst_id: str, order_id: str, max_attempts: int = 3, delay: float = 1.0,
+    ) -> Decimal | None:
+        """Re-query the exchange for a fill price up to max_attempts times.
+
+        Returns the avg_fill_price if found, None otherwise.
+        """
+        for attempt in range(1, max_attempts + 1):
+            try:
+                detail = await self._client.get_order_detail(inst_id, order_id)
+                if detail.avg_fill_price and detail.avg_fill_price > 0:
+                    log.info(
+                        'fill_price_recovered',
+                        inst_id=inst_id,
+                        order_id=order_id,
+                        price=str(detail.avg_fill_price),
+                        attempt=attempt,
+                    )
+                    return detail.avg_fill_price
+            except Exception:
+                log.warning(
+                    'fill_price_requery_failed',
+                    inst_id=inst_id,
+                    order_id=order_id,
+                    attempt=attempt,
+                )
+            if attempt < max_attempts:
+                await asyncio.sleep(delay)
+        return None
 
     async def _check_breakeven(self, trade: TrackedTrade, price: Decimal, risk_config) -> None:
         """Move SL to breakeven once minimum profit is reached."""

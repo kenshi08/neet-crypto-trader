@@ -1,4 +1,4 @@
-"""Tests for Phase 1 execution robustness fixes.
+"""Tests for execution robustness fixes.
 
 Covers:
 - Bybit get_algo_order_status() fix (#75)
@@ -6,6 +6,7 @@ Covers:
 - OKX get_algo_order_status() fix (same class of bug)
 - Idempotency key generation on retries (#77)
 - Barrier repair backoff (#78)
+- Fill-price re-query on missing avg_fill_price (#87)
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from __future__ import annotations
 import time
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -22,6 +23,7 @@ from nct.exchange.bybit_client import BybitClient
 from nct.exchange.coinbase_client import CoinbaseClient
 from nct.exchange.models import (
     OrderRequest,
+    OrderResponse,
     OrderStatus,
     OrderType,
     Side,
@@ -34,7 +36,7 @@ from nct.executor import (
     RepairState,
 )
 from nct.portfolio.tracker import TrackedTrade
-
+from nct.risk.risk_manager import TradeDecision
 
 # ===================================================================
 # Helpers
@@ -70,11 +72,14 @@ def _make_executor(mock_client=None, mock_portfolio=None):
     client = mock_client or AsyncMock()
     portfolio = mock_portfolio or MagicMock()
     portfolio.open_trades = {}
+    portfolio.open_trade = AsyncMock(return_value=_make_trade())
     portfolio.close_trade = AsyncMock(return_value=Decimal('0'))
+    budget_mgr = MagicMock()
+    budget_mgr.record_trade_open = AsyncMock()
     return OrderExecutor(
         client=client,
         portfolio=portfolio,
-        budget_manager=MagicMock(),
+        budget_manager=budget_mgr,
         protection_manager=MagicMock(),
     )
 
@@ -370,3 +375,199 @@ class TestBarrierRepairBackoff:
 
         # Should have attempted to close the position
         executor._portfolio.close_trade.assert_called_once()
+
+
+# ===================================================================
+# Issue #87 — Fill-price re-query on missing avg_fill_price
+# ===================================================================
+
+
+class TestFillPriceRequery:
+    """Verify that the executor re-queries the exchange when avg_fill_price
+    is missing, and reverses the entry when the price cannot be determined."""
+
+    def _make_decision(self) -> TradeDecision:
+        return TradeDecision(
+            approved=True,
+            size=Decimal('0.01'),
+            stop_loss_price=Decimal('62000'),
+            take_profit_price=Decimal('67000'),
+            time_limit_seconds=3600,
+        )
+
+    @pytest.mark.asyncio
+    async def test_uses_fill_price_from_initial_response(self):
+        """When avg_fill_price is present, no re-query needed."""
+        client = AsyncMock()
+        client.place_order.return_value = OrderResponse(
+            order_id='ord_1', client_order_id='', status=OrderStatus.FILLED,
+            inst_id='BTC-USD', side=Side.BUY, size=Decimal('0.01'),
+            price=None, filled_size=Decimal('0.01'),
+            avg_fill_price=Decimal('64500'), fee=Decimal('0.1'),
+        )
+        client.place_stop_loss.return_value = 'sl_1'
+        client.place_take_profit.return_value = 'tp_1'
+
+        executor = _make_executor(mock_client=client)
+        trade = await executor.execute_trade(
+            inst_id='BTC-USD', decision=self._make_decision(),
+        )
+
+        assert trade is not None
+        # Verify open_trade was called with the correct entry price
+        call_kwargs = executor._portfolio.open_trade.call_args
+        assert call_kwargs.kwargs.get('entry_price') == Decimal('64500')
+        client.get_order_detail.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_requery_recovers_fill_price(self):
+        """When initial response has no fill price, re-query returns it."""
+        from nct.exchange.models import OrderResponse
+        # Initial response: no fill price
+        client = AsyncMock()
+        client.place_order.return_value = OrderResponse(
+            order_id='ord_2', client_order_id='', status=OrderStatus.FILLED,
+            inst_id='BTC-USD', side=Side.BUY, size=Decimal('0.01'),
+            price=None, filled_size=Decimal('0.01'),
+            avg_fill_price=None, fee=Decimal('0.1'),
+            is_dry_run=False,
+        )
+        # Re-query returns fill price
+        client.get_order_detail.return_value = OrderResponse(
+            order_id='ord_2', client_order_id='', status=OrderStatus.FILLED,
+            inst_id='BTC-USD', side=Side.BUY, size=Decimal('0.01'),
+            price=None, filled_size=Decimal('0.01'),
+            avg_fill_price=Decimal('64200'), fee=Decimal('0.1'),
+        )
+        client.place_stop_loss.return_value = 'sl_2'
+        client.place_take_profit.return_value = 'tp_2'
+
+        executor = _make_executor(mock_client=client)
+        trade = await executor.execute_trade(
+            inst_id='BTC-USD', decision=self._make_decision(),
+        )
+
+        assert trade is not None
+        call_kwargs = executor._portfolio.open_trade.call_args
+        assert call_kwargs.kwargs.get('entry_price') == Decimal('64200')
+        client.get_order_detail.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_reverses_entry_when_fill_price_never_found(self):
+        """When fill price is missing and re-query fails, entry is reversed."""
+        client = AsyncMock()
+        client.place_order.return_value = OrderResponse(
+            order_id='ord_3', client_order_id='', status=OrderStatus.FILLED,
+            inst_id='BTC-USD', side=Side.BUY, size=Decimal('0.01'),
+            price=None, filled_size=Decimal('0.01'),
+            avg_fill_price=None, fee=Decimal('0.1'),
+            is_dry_run=False,
+        )
+        # Re-query never returns a price
+        client.get_order_detail.return_value = OrderResponse(
+            order_id='ord_3', client_order_id='', status=OrderStatus.FILLED,
+            inst_id='BTC-USD', side=Side.BUY, size=Decimal('0.01'),
+            price=None, filled_size=Decimal('0.01'),
+            avg_fill_price=None, fee=Decimal('0'),
+        )
+
+        executor = _make_executor(mock_client=client)
+        trade = await executor.execute_trade(
+            inst_id='BTC-USD', decision=self._make_decision(),
+        )
+
+        # Trade should be None — entry was reversed
+        assert trade is None
+        # Reversal order should have been placed (second place_order call)
+        assert client.place_order.call_count == 2
+        reversal_order = client.place_order.call_args_list[1][0][0]
+        assert reversal_order.side == Side.SELL
+
+    @pytest.mark.asyncio
+    async def test_dry_run_uses_sl_tp_midpoint(self):
+        """In dry-run mode, derive entry price from SL/TP midpoint (simulated)."""
+        client = AsyncMock()
+        client.place_order.return_value = OrderResponse(
+            order_id='dry_123', client_order_id='', status=OrderStatus.FILLED,
+            inst_id='BTC-USD', side=Side.BUY, size=Decimal('0.01'),
+            price=None, filled_size=Decimal('0.01'),
+            avg_fill_price=None, fee=Decimal('0'),
+            is_dry_run=True,
+        )
+        client.place_stop_loss.return_value = 'sl_dry'
+        client.place_take_profit.return_value = 'tp_dry'
+
+        executor = _make_executor(mock_client=client)
+        decision = self._make_decision()
+        trade = await executor.execute_trade(
+            inst_id='BTC-USD', decision=decision,
+        )
+
+        assert trade is not None
+        # Midpoint of SL(62000) and TP(67000) = 64500
+        call_kwargs = executor._portfolio.open_trade.call_args
+        assert call_kwargs.kwargs.get('entry_price') == Decimal('64500')
+        client.get_order_detail.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_requery_retries_up_to_max_attempts(self):
+        """Re-query is called up to max_attempts before giving up."""
+        client = AsyncMock()
+        client.place_order.return_value = OrderResponse(
+            order_id='ord_4', client_order_id='', status=OrderStatus.FILLED,
+            inst_id='BTC-USD', side=Side.BUY, size=Decimal('0.01'),
+            price=None, filled_size=Decimal('0.01'),
+            avg_fill_price=None, fee=Decimal('0.1'),
+            is_dry_run=False,
+        )
+        # All re-queries return no fill price
+        client.get_order_detail.return_value = OrderResponse(
+            order_id='ord_4', client_order_id='', status=OrderStatus.PENDING,
+            inst_id='BTC-USD', side=Side.BUY, size=Decimal('0.01'),
+            price=None, avg_fill_price=None,
+        )
+
+        executor = _make_executor(mock_client=client)
+        trade = await executor.execute_trade(
+            inst_id='BTC-USD', decision=self._make_decision(),
+        )
+
+        assert trade is None
+        assert client.get_order_detail.call_count == 3  # default max_attempts
+
+    @pytest.mark.asyncio
+    async def test_requery_recovers_on_second_attempt(self):
+        """Re-query finds the price on the second attempt."""
+        client = AsyncMock()
+        client.place_order.return_value = OrderResponse(
+            order_id='ord_5', client_order_id='', status=OrderStatus.FILLED,
+            inst_id='BTC-USD', side=Side.BUY, size=Decimal('0.01'),
+            price=None, filled_size=Decimal('0.01'),
+            avg_fill_price=None, fee=Decimal('0.1'),
+            is_dry_run=False,
+        )
+        # First re-query: no price; second: has price
+        no_price = OrderResponse(
+            order_id='ord_5', client_order_id='', status=OrderStatus.PENDING,
+            inst_id='BTC-USD', side=Side.BUY, size=Decimal('0.01'),
+            price=None, avg_fill_price=None,
+        )
+        has_price = OrderResponse(
+            order_id='ord_5', client_order_id='', status=OrderStatus.FILLED,
+            inst_id='BTC-USD', side=Side.BUY, size=Decimal('0.01'),
+            price=None, filled_size=Decimal('0.01'),
+            avg_fill_price=Decimal('63800'), fee=Decimal('0.1'),
+        )
+        client.get_order_detail.side_effect = [no_price, has_price]
+        client.place_stop_loss.return_value = 'sl_5'
+        client.place_take_profit.return_value = 'tp_5'
+
+        executor = _make_executor(mock_client=client)
+        trade = await executor.execute_trade(
+            inst_id='BTC-USD', decision=self._make_decision(),
+        )
+
+        assert trade is not None
+        call_kwargs = executor._portfolio.open_trade.call_args
+        assert call_kwargs.kwargs.get('entry_price') == Decimal('63800')
+        assert client.get_order_detail.call_count == 2

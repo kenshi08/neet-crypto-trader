@@ -493,6 +493,27 @@ class OKXClient(IExchange):
         return response
 
     @retrier
+    async def get_order_detail(
+        self, inst_id: str, order_id: str,
+    ) -> OrderResponse:
+        """Re-query an OKX order to get fill details."""
+        if order_id in self._dry_run_orders:
+            return self._dry_run_orders[order_id]
+
+        self._ensure_sdk()
+        async with self._trade_limiter:
+            result = await self._run_sync(
+                self._trade_api.get_order, instId=inst_id, ordId=order_id,
+            )
+        data = self._check_response(result, context=f'get_order_detail({order_id})')
+        if data:
+            return parse_order_response(data[0])
+        return OrderResponse(
+            order_id=order_id, client_order_id='', status=OrderStatus.PENDING,
+            inst_id=inst_id, side=Side.BUY, size=Decimal(0), price=None,
+        )
+
+    @retrier
     async def get_algo_order_status(
         self, inst_id: str, algo_order_id: str,
     ) -> OrderStatus:
