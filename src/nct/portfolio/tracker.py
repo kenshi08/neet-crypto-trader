@@ -27,6 +27,8 @@ class TrackedTrade:
     fee: Decimal
     stop_loss_algo_id: str = ''
     take_profit_algo_id: str = ''
+    stop_loss_price: Decimal | None = None
+    take_profit_price: Decimal | None = None
     opened_at: datetime | None = None
 
     @property
@@ -55,6 +57,8 @@ class PortfolioTracker:
         """Load open trades from database on startup."""
         open_trades = await self._db.get_open_trades()
         for row in open_trades:
+            sl_price = Decimal(row['stop_loss_price']) if row.get('stop_loss_price') else None
+            tp_price = Decimal(row['take_profit_price']) if row.get('take_profit_price') else None
             trade = TrackedTrade(
                 trade_id=row['id'],
                 inst_id=row['inst_id'],
@@ -62,6 +66,8 @@ class PortfolioTracker:
                 size=Decimal(row['size']),
                 entry_price=Decimal(row['entry_price']),
                 fee=Decimal(row['fee']),
+                stop_loss_price=sl_price,
+                take_profit_price=tp_price,
             )
             self._open_trades[trade.inst_id] = trade
             log.warning(
@@ -119,6 +125,8 @@ class PortfolioTracker:
             fee=fee,
             stop_loss_algo_id=stop_loss_algo_id,
             take_profit_algo_id=take_profit_algo_id,
+            stop_loss_price=stop_loss_price,
+            take_profit_price=take_profit_price,
             opened_at=now,
         )
         self._open_trades[inst_id] = trade
@@ -186,9 +194,9 @@ class PortfolioTracker:
         return pnl
 
     async def sync_positions(self) -> list[Position]:
-        """Fetch current positions from OKX and reconcile with local state.
+        """Fetch current positions from exchange and reconcile with local state.
 
-        Returns the list of positions from OKX.
+        Returns the list of positions from the exchange.
         """
         try:
             positions = await self._client.get_positions()
@@ -196,20 +204,63 @@ class PortfolioTracker:
             log.exception('position_sync_failed')
             return []
 
-        okx_pairs = {p.inst_id for p in positions if p.size > 0}
+        exchange_pairs = {p.inst_id for p in positions if p.size > 0}
         tracked_pairs = set(self._open_trades.keys())
 
-        # Positions on OKX we don't know about
-        untracked = okx_pairs - tracked_pairs
+        # Positions on exchange we don't know about
+        untracked = exchange_pairs - tracked_pairs
         if untracked:
-            log.warning('untracked_positions_on_okx', pairs=list(untracked))
+            log.warning('untracked_positions_on_exchange', pairs=list(untracked))
 
-        # Positions we track but OKX doesn't show (may have been closed externally)
-        stale = tracked_pairs - okx_pairs
+        # Positions we track but exchange doesn't show (may have been closed externally)
+        stale = tracked_pairs - exchange_pairs
         if stale:
             log.warning('stale_tracked_positions', pairs=list(stale))
 
         return positions
+
+    async def reconcile(self) -> list[tuple[str, str]]:
+        """Auto-fix stale trades and detect untracked positions.
+
+        Returns a list of (inst_id, event_type) for events that occurred:
+        - ('BTC-USD', 'stale_closed') — stale trade was auto-closed
+        - ('ETH-USD', 'untracked_detected') — untracked position found
+        """
+        events: list[tuple[str, str]] = []
+
+        try:
+            positions = await self._client.get_positions()
+        except Exception:
+            log.exception('reconciliation_failed')
+            return events
+
+        exchange_pairs = {p.inst_id for p in positions if p.size > 0}
+        tracked_pairs = set(self._open_trades.keys())
+
+        # Skip position-based reconciliation if exchange returns no positions
+        # (e.g., Coinbase spot has no positions API — rely on barrier checks)
+        if not positions and not tracked_pairs:
+            return events
+
+        # Untracked positions — log but don't auto-adopt (too risky)
+        for pair in exchange_pairs - tracked_pairs:
+            log.warning('reconciliation_untracked', pair=pair)
+            events.append((pair, 'untracked_detected'))
+
+        # Stale trades — auto-close if exchange no longer shows them
+        # Only if exchange returned data (non-empty response)
+        if positions:
+            for pair in tracked_pairs - exchange_pairs:
+                try:
+                    ticker = await self._client.get_ticker(pair)
+                    price = ticker.last
+                    await self.close_trade(pair, exit_price=price, reason='reconciled_stale')
+                    log.warning('reconciliation_stale_closed', pair=pair, price=str(price))
+                    events.append((pair, 'stale_closed'))
+                except Exception:
+                    log.exception('reconciliation_stale_close_failed', pair=pair)
+
+        return events
 
     def check_time_limits(self, *, time_limit_seconds: int) -> list[str]:
         """Return inst_ids of trades that have exceeded their time limit."""

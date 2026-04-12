@@ -224,6 +224,14 @@ class TelegramNotifier:
     async def notify_limit_hit(self, *, reason: str) -> None:
         await self.send_alert(f'*Limit Hit*\n{reason}', severity=AlertSeverity.HIGH)
 
+    async def notify_reconciliation(
+        self, *, event_type: str, inst_id: str, detail: str = '',
+    ) -> None:
+        await self.send_alert(
+            f'*Reconciliation*\n`{inst_id}` — {event_type}\n{detail}',
+            severity=AlertSeverity.CRITICAL,
+        )
+
     # -- Command handlers -----------------------------------------------
 
     async def _cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -243,12 +251,14 @@ class TelegramNotifier:
             f'Budget remaining: `{bm.budget_remaining:.4f}`'
         )
         await update.message.reply_text(msg, parse_mode='Markdown')
+        await self._log_command(update, 'status')
 
     async def _cmd_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not self._agent or str(update.effective_chat.id) != self._chat_id:
             return
 
         await update.message.reply_text('Activating kill switch...')
+        await self._log_command(update, 'stop')
         task = asyncio.create_task(self._agent.kill_switch())
         task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
 
@@ -260,6 +270,7 @@ class TelegramNotifier:
 
         self._agent._state = AgentState.PAUSED
         await update.message.reply_text('Trading paused. Positions remain open.')
+        await self._log_command(update, 'pause')
 
     async def _cmd_resume(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not self._agent or str(update.effective_chat.id) != self._chat_id:
@@ -269,6 +280,7 @@ class TelegramNotifier:
 
         self._agent._state = AgentState.RUNNING
         await update.message.reply_text('Trading resumed.')
+        await self._log_command(update, 'resume')
 
     async def _cmd_balance(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not self._agent or str(update.effective_chat.id) != self._chat_id:
@@ -301,6 +313,7 @@ class TelegramNotifier:
             msg = f'Failed to fetch balance: {str(e)[:100]}'
 
         await update.message.reply_text(msg, parse_mode='Markdown')
+        await self._log_command(update, 'balance')
 
     async def _cmd_why(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Explain why a trade would or would not be approved for a pair."""
@@ -338,8 +351,10 @@ class TelegramNotifier:
             lines.append(f'\n*Result: {result}*')
 
             await update.message.reply_text('\n'.join(lines), parse_mode='Markdown')
+            await self._log_command(update, 'why', pair)
         except Exception as e:
             await update.message.reply_text(f'Error: {str(e)[:200]}')
+            await self._log_command(update, 'why', pair, result='error')
 
     async def _cmd_signal(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Show current indicator values for a pair."""
@@ -392,8 +407,10 @@ class TelegramNotifier:
             )
 
             await update.message.reply_text('\n'.join(lines), parse_mode='Markdown')
+            await self._log_command(update, 'signal', pair)
         except Exception as e:
             await update.message.reply_text(f'Error: {str(e)[:200]}')
+            await self._log_command(update, 'signal', pair, result='error')
 
     async def _cmd_close(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Close a single open position by pair name."""
@@ -437,8 +454,10 @@ class TelegramNotifier:
                 f'*Closed* `{pair}`\nP&L: `{emoji}{pnl:.4f} {quote}`',
                 parse_mode='Markdown',
             )
+            await self._log_command(update, 'close', pair)
         except Exception as e:
             await update.message.reply_text(f'Failed to close {pair}: {str(e)[:200]}')
+            await self._log_command(update, 'close', pair, result='error')
 
     # -- Inline keyboard handlers ------------------------------------------
 
@@ -714,6 +733,24 @@ class TelegramNotifier:
         )
 
     # -- Helpers -----------------------------------------------------------
+
+    async def _log_command(
+        self,
+        update: Update,
+        command: str,
+        args: str = '',
+        result: str = 'success',
+    ) -> None:
+        """Log a Telegram command to the audit trail."""
+        if not self._agent or not hasattr(self._agent, '_db'):
+            return
+        try:
+            user_id = str(update.effective_user.id) if update.effective_user else 'unknown'
+            await self._agent._db.log_telegram_command(
+                user_id=user_id, command=command, args=args, result=result,
+            )
+        except Exception:
+            log.debug('command_audit_log_failed', command=command)
 
     async def _get_price_and_balance(
         self, pair: str,

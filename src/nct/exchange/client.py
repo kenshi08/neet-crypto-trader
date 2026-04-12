@@ -490,6 +490,33 @@ class OKXClient(IExchange):
         )
         return response
 
+    async def get_algo_order_status(
+        self, inst_id: str, algo_order_id: str,
+    ) -> OrderStatus:
+        if algo_order_id.startswith('dry_'):
+            return OrderStatus.PENDING
+
+        try:
+            result = await self._call(
+                self._trade_api.order_algos_list,
+                ordType='conditional',
+                algoId=algo_order_id,
+                instId=inst_id,
+            )
+            data = self._check_response(result, context='get_algo_order_status')
+            if data:
+                state = data[0].get('state', '')
+                if state == 'live':
+                    return OrderStatus.PENDING
+                if state == 'effective' or state == 'filled':
+                    return OrderStatus.FILLED
+                if state == 'canceled' or state == 'cancelled':
+                    return OrderStatus.CANCELLED
+            return OrderStatus.CANCELLED
+        except Exception:
+            log.exception('get_algo_order_status_failed', algo_order_id=algo_order_id)
+            return OrderStatus.CANCELLED
+
     # ===================================================================
     # Cleanup
     # ===================================================================

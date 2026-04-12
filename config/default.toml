@@ -4,6 +4,7 @@ strategy = "momentum"
 timeframe = "15m"
 max_open_positions = 3
 poll_interval_seconds = 10
+reconciliation_interval = 10    # Run reconciliation + barrier checks every N iterations
 
 [budget]
 period = "weekly"               # "weekly" or "monthly"

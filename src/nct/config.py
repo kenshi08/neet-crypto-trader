@@ -83,6 +83,7 @@ class TradingConfig(BaseModel):
     timeframe: str = '15m'
     max_open_positions: int = 3
     poll_interval_seconds: int = 10
+    reconciliation_interval: int = 10  # run reconciliation every N iterations
 
     @field_validator('pairs', mode='before')
     @classmethod

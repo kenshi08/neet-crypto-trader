@@ -61,6 +61,15 @@ CREATE TABLE IF NOT EXISTS executor_log (
     timestamp TEXT NOT NULL,
     FOREIGN KEY (trade_id) REFERENCES trades(id)
 );
+
+CREATE TABLE IF NOT EXISTS telegram_commands (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    command TEXT NOT NULL,
+    args TEXT,
+    result TEXT NOT NULL DEFAULT 'success'
+);
 """
 
 
@@ -245,6 +254,26 @@ class Database:
             """INSERT INTO executor_log (trade_id, action, details, timestamp)
                VALUES (?, ?, ?, ?)""",
             (trade_id, action, details, timestamp.isoformat()),
+        )
+        await self.conn.commit()
+
+
+    # -- Telegram command log ---------------------------------------------
+
+    async def log_telegram_command(
+        self,
+        *,
+        user_id: str,
+        command: str,
+        args: str = '',
+        result: str = 'success',
+        timestamp: datetime | None = None,
+    ) -> None:
+        ts = timestamp or datetime.now()
+        await self.conn.execute(
+            """INSERT INTO telegram_commands (timestamp, user_id, command, args, result)
+               VALUES (?, ?, ?, ?, ?)""",
+            (ts.isoformat(), user_id, command, args, result),
         )
         await self.conn.commit()
 
