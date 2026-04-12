@@ -78,12 +78,18 @@ class CompositeStrategy(IStrategy):
             no_trade_threshold=no_trade_threshold,
             full_size_threshold=full_size_threshold,
         )
-        if meta_model_path:
+        # Auto-detect model: explicit path > default location > no model (fallback)
+        from pathlib import Path
+        default_model = Path('data/models/meta_model.json')
+        model_to_load = meta_model_path or (
+            str(default_model) if default_model.exists() else ''
+        )
+        if model_to_load:
             try:
-                self._meta.load(meta_model_path)
-                log.info('composite_meta_model_loaded', path=meta_model_path)
+                self._meta.load(model_to_load)
+                log.info('composite_meta_model_loaded', path=model_to_load)
             except Exception:
-                log.warning('composite_meta_model_load_failed', path=meta_model_path)
+                log.warning('composite_meta_model_load_failed', path=model_to_load)
 
         # LLM reasoning engine — anomaly guard + thesis generation
         self._llm = LLMReasoningEngine(
