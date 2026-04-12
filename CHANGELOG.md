@@ -7,6 +7,9 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- `/signal` command now shows all-pairs summary when called without arguments, with inline keyboard for drill-down
+
 ### Added — Live Readiness (Phases 16-22)
 
 #### Phase 22: Validation & Go-Live (#103, #104, #105)

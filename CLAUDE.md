@@ -822,9 +822,17 @@ Full roadmap from paper trading to live readiness. Driven by external code revie
 - No formal order state machine (state is implicit in TrackedTrade lifecycle)
 - Pre-existing lint warnings in `config.py`, `db.py`, `diagnostics.py`, `main.py`, `notifier.py`
 
+### Current Deployment (2026-04-12)
+- **VPS**: Hetzner, Docker, OKX EEA demo (`my.okx.com`, `DEMO_REAL_BALANCE`)
+- **Config**: `paper-validation.toml` — Week 1 of 2-week validation
+- **Exchange**: `EXCHANGE=okx`, `OKX_DEMO_MODE=true`
+- **Status**: Running, 5 pairs (4 eligible after market filter), regime detection active
+- **Budget**: $300/week, ~$100 deployed, ~$0.97 realized P&L
+- **Next step**: Complete Week 1, then switch to Hyperliquid testnet for Week 2, then graduate to `live-reduced.toml`
+
 ### How to Continue
 - `gh` CLI is at `"/c/Program Files/GitHub CLI/gh.exe"` (not on PATH in bash)
 - Python venv: `.venv/Scripts/python.exe`
 - Workflow: create issues → branch from `main` → implement → `pytest tests/ -x -q` → `ruff check` → commit → push → PR → merge
 - All strategy params come from `[strategy.<name>]` sections in TOML, loaded via `config.strategy_params`
-- **Next step**: Deploy `paper-validation.toml` on VPS for 2-week validation, then graduate to `live-reduced.toml`
+- VPS update: `ssh vps → cd neet-crypto-trader → git pull origin main → docker compose build --no-cache → docker compose up -d`
