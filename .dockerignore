@@ -16,7 +16,6 @@ dist/
 build/
 *.egg-info
 tests/
-scripts/
 CLAUDE.md
 CHANGELOG.md
 .dockerignore
