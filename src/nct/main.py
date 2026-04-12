@@ -402,9 +402,16 @@ class TradingAgent:
         for ex_name, portfolio in self._multi.portfolios.items():
             if self._state != AgentState.RUNNING:
                 break
-            await self._evaluate_portfolio(
-                ex_name, portfolio, current_prices,
-            )
+            try:
+                await self._evaluate_portfolio(
+                    ex_name, portfolio, current_prices,
+                )
+            except Exception:
+                log.warning(
+                    'portfolio_iteration_failed',
+                    exchange=ex_name,
+                    exc_info=True,
+                )
 
         # Log periodic status
         if self._multi and len(self._multi.exchanges) > 1:
@@ -782,7 +789,7 @@ class TradingAgent:
                 try:
                     ticker = await portfolio.client.get_ticker(pair)
                     prices[pair] = ticker.last
-                except ExchangeError:
+                except Exception:
                     log.warning('ticker_fetch_failed', pair=pair, exchange=ex_name)
 
         return prices

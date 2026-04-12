@@ -9,6 +9,7 @@ from decimal import Decimal
 import structlog
 from aiolimiter import AsyncLimiter
 
+from nct.exceptions import ExchangeError
 from nct.exchange.base import IExchange
 from nct.exchange.client import retrier
 from nct.exchange.models import (
@@ -84,7 +85,15 @@ class HyperliquidClient(IExchange):
             else constants.MAINNET_API_URL
         )
 
-        self._info = Info(base_url, skip_ws=True)
+        try:
+            self._info = Info(base_url, skip_ws=True)
+        except Exception:
+            # SDK init can fail on testnet with sparse token metadata.
+            # Raise a clear error so callers can handle gracefully.
+            raise ExchangeError(
+                'Hyperliquid SDK init failed — testnet may be unavailable. '
+                'Check https://app.hyperliquid-testnet.xyz/ or try mainnet.'
+            )
 
         if self._private_key:
             from eth_account import Account
