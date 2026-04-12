@@ -45,7 +45,6 @@ class CompositeStrategy(IStrategy):
         pe_window: int = 50,
         pe_order: int = 5,
         bocpd_hazard_rate: float = 1 / 250,
-        meta_model_path: str = '',
         no_trade_threshold: float = 0.55,
         full_size_threshold: float = 0.70,
         llm_enabled: bool = True,
@@ -73,23 +72,19 @@ class CompositeStrategy(IStrategy):
         self._hmm = HMMRegimeDetector()
         self._bocpd = BOCPD(hazard_rate=bocpd_hazard_rate)
 
-        # Meta-model
+        # Meta-model — fixed path, written by scripts/auto_pipeline.py
         self._meta = QuantMetaModel(
             no_trade_threshold=no_trade_threshold,
             full_size_threshold=full_size_threshold,
         )
-        # Auto-detect model: explicit path > default location > no model (fallback)
         from pathlib import Path
-        default_model = Path('data/models/meta_model.json')
-        model_to_load = meta_model_path or (
-            str(default_model) if default_model.exists() else ''
-        )
-        if model_to_load:
+        model_path = Path('data/models/meta_model.json')
+        if model_path.exists():
             try:
-                self._meta.load(model_to_load)
-                log.info('composite_meta_model_loaded', path=model_to_load)
+                self._meta.load(str(model_path))
+                log.info('composite_meta_model_loaded', path=str(model_path))
             except Exception:
-                log.warning('composite_meta_model_load_failed', path=model_to_load)
+                log.warning('composite_meta_model_load_failed', path=str(model_path))
 
         # LLM reasoning engine — anomaly guard + thesis generation
         self._llm = LLMReasoningEngine(

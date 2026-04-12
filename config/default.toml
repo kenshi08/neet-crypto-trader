@@ -95,7 +95,7 @@ pe_threshold = 0.90             # Permutation entropy: block trades above this (
 pe_window = 50                  # Rolling window for PE computation
 pe_order = 5                    # Embedding dimension (5 = 120 ordinal patterns)
 bocpd_hazard_rate = 0.004       # BOCPD: expected changepoint frequency (~1/250 candles)
-meta_model_path = ""            # Path to trained XGBoost model (.json), empty = TA fallback
+# Meta-model loads from data/models/meta_model.json (written by auto_pipeline.py)
 no_trade_threshold = 0.55       # Meta-model P(profitable) below this = no trade
 full_size_threshold = 0.70      # Meta-model P(profitable) above this = full position
 llm_enabled = true              # LLM anomaly guard: blocks trades during regime conflicts
