@@ -11,7 +11,7 @@ Budget-controlled crypto trading agent supporting **Coinbase**, **OKX**, and **B
 - **Paper Trading** — Demo/testnet mode by default, with unambiguous mode announcement at startup
 - **Realistic Backtests** — Fee-aware, slippage-modeled, with regime breakdown and per-pair contribution
 - **Research Tooling** — Walk-forward validation, parameter stability grid search, lookahead bias checker
-- **Pluggable Strategies** — Config-driven selection between RSI+MACD momentum and Bollinger Bands mean reversion
+- **Pluggable Strategies** — Config-driven selection: momentum (RSI+MACD), mean reversion (Bollinger), trend following (EMA+ADX), volatility breakout (ATR range)
 - **Market Selection** — Automatic pair filtering by volume, spread, and blacklist
 - **Reconciliation** — Auto-fix stale trades, verify SL/TP barriers still exist, handle partial fills
 - **Persistent State** — SQLite-backed budget tracking, trade analytics, command audit trail
@@ -86,7 +86,7 @@ OKX_DEMO_MODE=true
 ```toml
 [trading]
 pairs = ["BTC-USDT", "ETH-USDT", "SOL-USDT"]
-strategy = "momentum"            # or "mean_reversion"
+strategy = "momentum"            # or "mean_reversion", "trend_following", "volatility_breakout"
 timeframe = "15m"
 max_open_positions = 3
 
@@ -116,13 +116,22 @@ macd_signal = 9
 bb_period = 20
 bb_std = 2.0
 volume_multiplier = 1.2
+
+[strategy.trend_following]
+ema_fast = 9
+ema_slow = 21
+adx_threshold = 25.0
+
+[strategy.volatility_breakout]
+lookback_period = 20
+breakout_atr_multiplier = 0.5
 ```
 
 ### Switching Strategies
 
-Change `strategy = "momentum"` to `strategy = "mean_reversion"` in your TOML
+Change `strategy = "momentum"` to any registered strategy name in your TOML
 config and restart the bot. The strategy factory picks the right implementation
-at startup. Available strategies: `momentum`, `mean_reversion`.
+at startup. Available strategies: `momentum`, `mean_reversion`, `trend_following`, `volatility_breakout`.
 
 ## Exchange Support
 
@@ -178,6 +187,8 @@ src/nct/
     base.py            # IStrategy ABC
     momentum.py        # RSI + MACD strategy
     mean_reversion.py  # Bollinger Bands + volume strategy
+    trend_following.py # EMA crossover + ADX trend filter
+    volatility_breakout.py # ATR-based range breakout
     data_provider.py   # OHLCV fetching, caching
     market_selector.py # Volume/spread/blacklist pair filter
   risk/
@@ -194,12 +205,13 @@ scripts/
   walk_forward.py      # Walk-forward validation
   param_stability.py   # Parameter grid search
   lookahead_check.py   # Lookahead bias detection
+  healthcheck.py       # Docker health check (heartbeat + DB)
 ```
 
 ## Development
 
 ```bash
-# Run tests (434 tests)
+# Run tests (491 tests)
 pytest tests/ -v
 
 # Run linter
@@ -243,7 +255,7 @@ See issue tracker for detailed deployment docs (#20).
 
 ## Roadmap
 
-All 12 phases are complete. See [GitHub Issues](https://github.com/kenshi08/neet-crypto-trader/issues) for details.
+All 15 phases are complete. See [GitHub Issues](https://github.com/kenshi08/neet-crypto-trader/issues) for details.
 
 - **Phase 1-6** — Foundation, risk engine, strategies, execution, main loop, hardening
 - **Phase 7** — Operator Intelligence: `/why`, `/signal`, `/close`, inline keyboard UI, alert severity (#44-#48, #68)
@@ -252,6 +264,9 @@ All 12 phases are complete. See [GitHub Issues](https://github.com/kenshi08/neet
 - **Phase 10** — Market Selection: volume/spread filters, correlation limits, notional cap, volatility breaker (#56-#59)
 - **Phase 11** — Research Pipeline: walk-forward, parameter stability, regime breakdown, lookahead checker (#60-#64)
 - **Phase 12** — Trailing & Staged Exits: trailing stop, breakeven move, partial profit taking (#65-#67)
+- **Phase 13** — Execution Robustness: fix `get_algo_order_status()` bugs, idempotency keys, barrier repair backoff (#75-#78)
+- **Phase 14** — Observability: risk-adjusted metrics (Sharpe, profit factor), Docker health check (#80-#82)
+- **Phase 15** — Strategy Expansion: trend-following (EMA+ADX), volatility breakout (ATR range) (#84-#85)
 
 ## License
 

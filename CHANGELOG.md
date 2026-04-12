@@ -7,6 +7,28 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added — Production Hardening (Phase 13-15)
+
+#### Phase 15: Strategy Expansion (#84, #85)
+- `TrendFollowingStrategy` — EMA crossover + ADX trend-strength filter, wider ATR stops (2x SL, 3x TP)
+- `VolatilityBreakoutStrategy` — ATR-based N-period range breakout, tighter stops (1x SL, 2x TP)
+- Both registered in strategy factory, configurable via `[strategy.trend_following]` and `[strategy.volatility_breakout]` in TOML
+- 26 new tests
+
+#### Phase 14: Observability Enhancements (#80, #81, #82)
+- `get_risk_adjusted_metrics()` DB query — Sharpe ratio, profit factor, avg win/loss, expectancy, max consecutive losses
+- `/stats` command extended with Risk Metrics section
+- Docker health check replaced with `scripts/healthcheck.py` — checks heartbeat freshness + DB readability
+- Main loop writes `data/.heartbeat` each iteration for health monitoring
+- 11 new tests
+
+#### Phase 13: Execution Robustness (#75, #76, #77, #78)
+- Fixed `get_algo_order_status()` in all 3 exchange clients — Bybit (`self._client` → `self._session`), Coinbase (`self._rest_client` → `self._session`), OKX (`self._call` → `self._run_sync`)
+- Added `@retrier`, `_ensure_sdk()`, async/await, rate limiting to all `get_algo_order_status()` methods
+- Idempotency key generation on order retries — prevents duplicate orders on network timeout
+- Exponential backoff on barrier repair (60s→120s→240s→480s, closes position after 5 failures)
+- 20 new tests
+
 ### Added — Phase 12: Trailing & Staged Exits (#65-#67)
 - Trailing stop activation after minimum gain — ratchets SL behind high-water mark
 - Breakeven stop move — moves SL to entry + fees once profit exceeds trigger

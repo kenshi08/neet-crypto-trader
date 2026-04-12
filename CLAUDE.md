@@ -40,9 +40,9 @@ TelegramNotifier (inline keyboard UI, severity filtering, audit trail)
 
 ### Codebase Metrics
 
-- **Source**: 7,919 lines across 35 files in 6 packages
-- **Tests**: 434 tests across 37 files (6,330 lines)
-- **Scripts**: 4 scripts (1,207 lines)
+- **Source**: ~8,800 lines across 37 files in 6 packages
+- **Tests**: 491 tests across 40 files
+- **Scripts**: 5 scripts (healthcheck.py added)
 - **DB tables**: 6 (trades, budget_periods, daily_stats, executor_log, trade_analytics, telegram_commands)
 
 ### Key Design Principles (from competitive analysis)
@@ -101,6 +101,8 @@ neet-crypto-trader/
 │       │   ├── factory.py          # create_strategy() + _STRATEGY_REGISTRY (#37)
 │       │   ├── momentum.py         # RSI + MACD
 │       │   ├── mean_reversion.py   # Bollinger Bands + volume
+│       │   ├── trend_following.py  # EMA crossover + ADX (#84)
+│       │   ├── volatility_breakout.py # ATR range breakout (#85)
 │       │   ├── data_provider.py    # OHLCV fetching, caching, DataFrame conversion
 │       │   └── market_selector.py  # Volume, spread, blacklist pair filter (#56)
 │       ├── risk/
@@ -125,7 +127,8 @@ neet-crypto-trader/
     ├── backtest.py                 # Historical backtest runner (fee + slippage + regime + per-pair)
     ├── walk_forward.py             # Walk-forward validation — train/test split (#60)
     ├── param_stability.py          # Parameter grid search — stability heatmap (#61)
-    └── lookahead_check.py          # Lookahead bias detection (#63)
+    ├── lookahead_check.py          # Lookahead bias detection (#63)
+    └── healthcheck.py              # Docker health check — heartbeat + DB (#82)
 ```
 
 ## Configuration
@@ -687,6 +690,9 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. **Updat
 10. **Market Selection & Portfolio** — Volume/spread filters, correlation-aware limits, daily notional cap, volatility circuit breaker (#56-#59)
 11. **Research Pipeline** — Walk-forward validation, parameter stability, regime breakdown, lookahead checker, per-pair contribution (#60-#64)
 12. **Trailing & Staged Exits** — Trailing stop activation, breakeven move, partial profit taking (#65-#67)
+13. **Execution Robustness** — Fix `get_algo_order_status()` bugs in all 3 clients, idempotency keys on retries, barrier repair backoff (#75-#78)
+14. **Observability** — Risk-adjusted metrics (Sharpe, profit factor, avg win/loss, expectancy), `/stats` enhancement, Docker health check with heartbeat (#80-#82)
+15. **Strategy Expansion** — Trend-following (EMA crossover + ADX), volatility breakout (ATR range breakout) (#84-#85)
 
 ## Deployment
 
@@ -732,3 +738,41 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. **Updat
    approximate walking the orderbook. Rejection counters
    (`rejected_min_notional`, `rejected_max_spread`, `rejected_random`)
    appear in the report alongside P&L.
+
+## Session Handover — Latest State (2026-04-12)
+
+### What Was Done (Phases 13-15)
+
+External ChatGPT review (8.5/10) identified gaps. After codebase exploration, many were already implemented. We addressed the **actual gaps** in 3 phases:
+
+**Phase 13 — Execution Robustness** (PR #79, issues #75-#78):
+- Fixed broken `get_algo_order_status()` in all 3 exchange clients (undefined attribute references)
+- Added `@retrier`, `_ensure_sdk()`, async, rate limiting to those methods
+- Added idempotency key generation on order retries (prevents duplicate orders)
+- Added exponential backoff to barrier repair (60s→480s, closes after 5 failures)
+
+**Phase 14 — Observability** (PR #83, issues #80-#82):
+- `get_risk_adjusted_metrics()` in `db.py` — Sharpe, profit factor, avg win/loss, expectancy, max consecutive losses
+- `/stats` Telegram command extended with Risk Metrics section
+- Docker health check: `scripts/healthcheck.py` replaces no-op check, verifies heartbeat + DB
+- Main loop writes `data/.heartbeat` each iteration
+
+**Phase 15 — Strategy Expansion** (PR #86, issues #84-#85):
+- `TrendFollowingStrategy` — EMA crossover + ADX filter (orthogonal to momentum/mean-reversion)
+- `VolatilityBreakoutStrategy` — ATR-based N-period range breakout
+- Both registered in factory, configurable via TOML
+
+### Current Test Count
+- **491 tests** across 40 test files, all passing
+
+### Known Remaining Gaps (from external review, not yet addressed)
+- No UI/dashboard (acceptable for personal use)
+- Strategies not yet backtested against each other for comparative performance
+- No formal order state machine (state is implicit in TrackedTrade lifecycle)
+- Pre-existing lint warnings in `config.py`, `db.py`, `diagnostics.py`, `main.py`, `notifier.py` (long lines, import ordering) — not introduced by recent work
+
+### How to Continue
+- `gh` CLI is at `"/c/Program Files/GitHub CLI/gh.exe"` (not on PATH in bash)
+- Python venv: `.venv/Scripts/python.exe`
+- Workflow: create issues → branch from `main` → implement → `pytest tests/ -x -q` → `ruff check` → commit → push → PR → merge
+- All strategy params come from `[strategy.<name>]` sections in TOML, loaded via `config.strategy_params`
