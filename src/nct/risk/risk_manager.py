@@ -128,6 +128,21 @@ class RiskManager:
             entry_price=current_price, side=side,
         )
 
+        # 7. Fee-aware profit check (#95)
+        if self._risk.min_profit_after_fees_pct > 0:
+            tp_pct = float(
+                abs(take_profit_price - current_price)
+                / current_price * 100,
+            )
+            round_trip_fee = self._risk.exchange_fee_pct * 2
+            net_profit_pct = tp_pct - round_trip_fee
+            if net_profit_pct < self._risk.min_profit_after_fees_pct:
+                return self._deny(
+                    f'TP {tp_pct:.2f}% - fees {round_trip_fee:.2f}% = '
+                    f'{net_profit_pct:.2f}% < min '
+                    f'{self._risk.min_profit_after_fees_pct}%'
+                )
+
         decision = TradeDecision(
             approved=True,
             side=side,

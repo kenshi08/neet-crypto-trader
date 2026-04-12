@@ -103,6 +103,7 @@ class TradingConfig(BaseModel):
     max_open_positions: int = 3
     poll_interval_seconds: int = 10
     reconciliation_interval: int = 10  # run reconciliation every N iterations
+    confirmation_timeframes: list[str] = Field(default_factory=list)  # e.g. ["1H", "4H"]
 
     @field_validator('pairs', mode='before')
     @classmethod
@@ -176,6 +177,8 @@ class RiskConfig(BaseModel):
     breakeven_trigger_pct: Decimal = Decimal('0')  # 0 = disabled; e.g. 1.5 = move SL to breakeven at +1.5%
     partial_tp: list[dict] = Field(default_factory=list)  # e.g. [{"pct": 3.0, "close_fraction": 0.5}]
     min_signal_confidence: float = 0.6
+    exchange_fee_pct: float = 0.1  # per-side fee (0.4 Coinbase, 0.1 OKX, 0.045 HL)
+    min_profit_after_fees_pct: float = 0.5  # min TP above round-trip fees (0 = disabled)
     correlation_groups: dict[str, list[str]] = Field(default_factory=dict)
     max_correlated_positions: int = 2
     volatility_circuit_breaker_multiplier: float = 0.0  # 0 = disabled

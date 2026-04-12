@@ -73,6 +73,26 @@ class DataProvider:
                 log.exception('data_fetch_failed', pair=pair)
         return results
 
+    async def get_htf_dataframes(
+        self,
+        pairs: list[str],
+        timeframes: list[str],
+        limit: int = 60,
+    ) -> dict[str, dict[str, pd.DataFrame]]:
+        """Fetch higher-timeframe data for multi-TF confirmation.
+
+        Returns {pair: {timeframe: DataFrame}} for each pair and timeframe.
+        """
+        results: dict[str, dict[str, pd.DataFrame]] = {}
+        for pair in pairs:
+            results[pair] = {}
+            for tf in timeframes:
+                try:
+                    results[pair][tf] = await self.get_dataframe(pair, tf, limit)
+                except Exception:
+                    log.debug('htf_fetch_failed', pair=pair, timeframe=tf)
+        return results
+
     def has_new_candle(self, inst_id: str, timeframe: str = '15m') -> bool:
         """Check if the cached data has a newer candle than last check.
 
