@@ -245,19 +245,36 @@ class TelegramNotifier:
         if not self._agent or str(update.effective_chat.id) != self._chat_id:
             return
 
-        bm = self._agent._budget_manager
-        pt = self._agent._portfolio
+        multi = self._agent._multi
+        lines = [f'*Status* | State: `{self._agent.state}`\n']
 
-        msg = (
-            f'*Status*\n'
-            f'State: `{self._agent.state}`\n'
-            f'Open positions: `{pt.open_trade_count}`\n'
-            f'Pairs: `{", ".join(pt.open_trades.keys()) or "none"}`\n'
-            f'Daily P&L: `{bm.daily_pnl:+.4f}`\n'
-            f'Period P&L: `{bm.realized_pnl:+.4f}`\n'
-            f'Budget remaining: `{bm.budget_remaining:.4f}`'
-        )
-        await update.message.reply_text(msg, parse_mode='Markdown')
+        if multi and len(multi.exchanges) > 1:
+            # Multi-exchange: show per-exchange breakdown
+            status = multi.get_aggregate_status()
+            for ex in status['exchanges']:
+                lines.append(
+                    f'*{ex["exchange"].title()}* ({ex["quote_currency"]}): '
+                    f'{ex["open_positions"]} pos | '
+                    f'P&L: `{ex["realized_pnl"]}` | '
+                    f'Budget: `{ex["budget_remaining"]}`/`{ex["budget_total"]}`'
+                )
+            lines.append(
+                f'\n*Total:* {status["total_positions"]} pos | '
+                f'P&L: `{status["total_pnl"]}`'
+            )
+        else:
+            # Single-exchange: original display
+            bm = self._agent._budget_manager
+            pt = self._agent._portfolio
+            lines.append(
+                f'Open positions: `{pt.open_trade_count}`\n'
+                f'Pairs: `{", ".join(pt.open_trades.keys()) or "none"}`\n'
+                f'Daily P&L: `{bm.daily_pnl:+.4f}`\n'
+                f'Period P&L: `{bm.realized_pnl:+.4f}`\n'
+                f'Budget remaining: `{bm.budget_remaining:.4f}`'
+            )
+
+        await update.message.reply_text('\n'.join(lines), parse_mode='Markdown')
         await self._log_command(update, 'status')
 
     async def _cmd_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
