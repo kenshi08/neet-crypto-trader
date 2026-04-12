@@ -221,22 +221,35 @@ class TradingAgent:
             self._config.strategy_params,
         )
 
-        # 10b. Regime detection — preload all strategies for fast switching
-        self._regime_classifier = None
+        # 10b. HMM regime detection (replaces ADX-threshold classifier)
+        self._hmm_regime = None
         self._regime_strategies: dict[str, IStrategy] = {}
         if self._config.trading.auto_regime_detection:
-            from nct.strategy.regime import RegimeClassifier
-            self._regime_classifier = RegimeClassifier()
-            for _regime_name, strat_name in self._config.trading.regime_map.items():
+            from nct.quant.regime import HMMRegimeDetector
+            self._hmm_regime = HMMRegimeDetector()
+            # HMM regime map: bull -> trend, bear -> trend, chop -> mean_reversion
+            hmm_regime_map = {
+                'bull': self._config.trading.regime_map.get('trending_up', 'trend_following'),
+                'bear': self._config.trading.regime_map.get('trending_down', 'trend_following'),
+                'chop': self._config.trading.regime_map.get('ranging_low_vol', 'mean_reversion'),
+            }
+            for strat_name in set(hmm_regime_map.values()):
                 if strat_name and strat_name not in self._regime_strategies:
                     is_active = strat_name == self._config.trading.strategy
                     sp = self._config.strategy_params if is_active else {}
                     self._regime_strategies[strat_name] = create_strategy(strat_name, sp)
+            self._hmm_regime_map = hmm_regime_map
             log.info(
-                'regime_detection_enabled',
+                'hmm_regime_detection_enabled',
                 strategies=list(self._regime_strategies.keys()),
                 timeframe=self._config.trading.regime_timeframe,
             )
+
+        # 10c. Macro data provider (for quant metadata)
+        from nct.quant.macro import MacroDataProvider
+        self._macro_provider = MacroDataProvider(
+            fred_api_key=os.environ.get('FRED_API_KEY'),
+        )
 
         # 11. Data provider
         self._data_provider = DataProvider(
@@ -429,13 +442,33 @@ class TradingAgent:
                 eligible_pairs, conf_tfs, limit=60,
             )
 
-        # Fetch regime-timeframe data if regime detection is enabled (#99)
+        # Fetch regime-timeframe data if HMM regime detection is enabled
         regime_dfs: dict = {}
-        if self._regime_classifier:
+        if self._hmm_regime:
             regime_tf = self._config.trading.regime_timeframe
             regime_dfs = await self._data_provider.get_dataframes(
                 eligible_pairs, timeframe=regime_tf, limit=60,
             )
+            # Auto-train HMM on first call with sufficient data
+            if not self._hmm_regime.is_trained and regime_dfs:
+                first_pair = next(iter(regime_dfs))
+                if len(regime_dfs[first_pair]) >= 200:
+                    try:
+                        self._hmm_regime.train(regime_dfs[first_pair])
+                    except Exception:
+                        log.warning('hmm_auto_train_failed', exc_info=True)
+
+        # Fetch macro features (cached, async, degrades gracefully)
+        macro_features = await self._macro_provider.get_macro_features()
+        macro_dict = {
+            'dxy_zscore': macro_features.dxy_zscore,
+            'vix_level': macro_features.vix_level,
+            'vix_zscore': macro_features.vix_zscore,
+            'fear_greed': macro_features.fear_greed,
+            'sp500_roc_1d': macro_features.sp500_roc_1d,
+            'hours_to_next_high_impact': macro_features.hours_to_next_high_impact,
+            'is_event_window': macro_features.is_event_window,
+        }
 
         # Evaluate strategy for each pair
         for pair, df in dataframes.items():
@@ -446,32 +479,35 @@ class TradingAgent:
             if self._portfolio.has_open_trade(pair):
                 continue
 
-            # Regime-based strategy selection (#100)
+            # HMM regime-based strategy selection
             active_strategy = self._strategy
-            if self._regime_classifier and pair in regime_dfs:
-                regime_result = self._regime_classifier.classify(regime_dfs[pair])
-                regime_map = self._config.trading.regime_map
-                strat_name = regime_map.get(regime_result.regime.value, '')
-                if not strat_name:
-                    log.info(
-                        'regime_skip_pair',
+            if self._hmm_regime and self._hmm_regime.is_trained and pair in regime_dfs:
+                hmm_result = self._hmm_regime.predict(regime_dfs[pair])
+                if hmm_result:
+                    strat_name = self._hmm_regime_map.get(hmm_result.regime.value, '')
+                    if not strat_name:
+                        log.info('regime_skip_pair', pair=pair, regime=hmm_result.regime.value)
+                        continue
+                    if strat_name in self._regime_strategies:
+                        active_strategy = self._regime_strategies[strat_name]
+                    log.debug(
+                        'hmm_regime_classified',
                         pair=pair,
-                        regime=regime_result.regime.value,
+                        regime=hmm_result.regime.value,
+                        bull_prob=round(hmm_result.bull_prob, 2),
+                        bear_prob=round(hmm_result.bear_prob, 2),
+                        strategy=active_strategy.name,
                     )
-                    continue  # EXTREME_VOL or unmapped → skip
-                if strat_name in self._regime_strategies:
-                    active_strategy = self._regime_strategies[strat_name]
-                log.debug(
-                    'regime_classified',
-                    pair=pair,
-                    regime=regime_result.regime.value,
-                    strategy=active_strategy.name,
-                    adx=round(regime_result.adx, 1),
-                )
+
+            # Build rich metadata for quant-aware strategies
+            metadata = {
+                'pair': pair,
+                'macro': macro_dict,
+            }
 
             # Run strategy with optional HTF data
             htf_data = htf_all.get(pair) if htf_all else None
-            result = active_strategy.evaluate(df, {'pair': pair}, htf_data=htf_data)
+            result = active_strategy.evaluate(df, metadata, htf_data=htf_data)
 
             if result.signal == Signal.HOLD:
                 continue

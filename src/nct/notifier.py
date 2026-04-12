@@ -395,6 +395,11 @@ class TelegramNotifier:
             result = 'APPROVED' if report.would_approve else 'DENIED'
             lines.append(f'\n*Result: {result}*')
 
+            # Brief quant thesis (if composite strategy + LLM or SHAP available)
+            thesis_line = self._format_quant_thesis(report)
+            if thesis_line:
+                lines.append(f'\n{thesis_line}')
+
             await update.message.reply_text('\n'.join(lines), parse_mode='Markdown')
             await self._log_command(update, 'why', pair)
         except Exception as e:
@@ -444,6 +449,11 @@ class TelegramNotifier:
                 lines.append(
                     f'BB: `{ind["bb_lower"]:,.2f}` \u2014 `{ind["bb_upper"]:,.2f}`'
                 )
+
+            # Quant summary (when composite strategy is active)
+            quant_line = self._format_quant_summary(report)
+            if quant_line:
+                lines.append(f'\n{quant_line}')
 
             lines.append(
                 f'\nSignal: `{report.signal.value.upper()}` (conf: {report.confidence:.2f})'
@@ -908,6 +918,66 @@ class TelegramNotifier:
             )
         except Exception:
             log.debug('command_audit_log_failed', command=command)
+
+    def _format_quant_thesis(self, report: object) -> str:
+        """Format a brief thesis line from quant indicators."""
+        ind = getattr(report, 'indicators', {})
+        parts = []
+
+        hmm_b = ind.get('hmm_bull')
+        if hmm_b is not None:
+            if hmm_b > 0.6:
+                parts.append(f'Bull regime ({hmm_b:.0%})')
+            elif ind.get('hmm_bear', 0) > 0.6:
+                parts.append(f'Bear regime ({ind["hmm_bear"]:.0%})')
+
+        pe = ind.get('pe_value')
+        if pe is not None:
+            parts.append('low entropy' if pe < 0.8 else 'high entropy')
+
+        cp = ind.get('bocpd_cp')
+        if cp is not None:
+            if cp > 0.2:
+                parts.append(f'changepoint risk ({cp:.0%})')
+            else:
+                parts.append('no changepoint risk')
+
+        if not parts:
+            return ''
+
+        return '*AI Thesis:* ' + ', '.join(parts) + '.'
+
+    def _format_quant_summary(self, report: object) -> str:
+        """Format a one-line quant summary from diagnostic report indicators."""
+        ind = getattr(report, 'indicators', {})
+        parts = []
+
+        # HMM regime
+        hmm_b = ind.get('hmm_bull')
+        if hmm_b is not None:
+            hmm_bear = ind.get('hmm_bear', 0)
+            hmm_chop = ind.get('hmm_chop', 0)
+            if hmm_b >= hmm_bear and hmm_b >= hmm_chop:
+                parts.append(f'BULL({hmm_b:.0%})')
+            elif hmm_bear >= hmm_b and hmm_bear >= hmm_chop:
+                parts.append(f'BEAR({hmm_bear:.0%})')
+            else:
+                parts.append(f'CHOP({hmm_chop:.0%})')
+
+        # Permutation entropy
+        pe = ind.get('pe_value')
+        if pe is not None:
+            parts.append(f'PE={pe:.2f}')
+
+        # Changepoint
+        cp = ind.get('bocpd_cp')
+        if cp is not None:
+            parts.append(f'CP={cp:.2f}')
+
+        if not parts:
+            return ''
+
+        return '*Quant:* ' + ' | '.join(parts)
 
     async def _get_price_and_balance(
         self, pair: str,

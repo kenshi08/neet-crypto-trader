@@ -84,3 +84,27 @@ atr_period = 14
 breakout_atr_multiplier = 0.5   # Min breakout distance as ATR multiple
 atr_sl_multiplier = 1.0         # Tight stop — quick exit on failed breakout
 atr_tp_multiplier = 2.0
+
+# Composite strategy — 8-layer quant alpha engine.
+# Set trading.strategy = "composite" to activate.
+# Falls back to base TA + entropy filter when meta-model is not trained.
+[strategy.composite]
+base_strategy = "momentum"      # Base TA strategy used as feature generator
+pe_threshold = 0.90             # Permutation entropy: block trades above this (market too random)
+pe_window = 50                  # Rolling window for PE computation
+pe_order = 5                    # Embedding dimension (5 = 120 ordinal patterns)
+bocpd_hazard_rate = 0.004       # BOCPD: expected changepoint frequency (~1/250 candles)
+meta_model_path = ""            # Path to trained XGBoost model (.json), empty = TA fallback
+no_trade_threshold = 0.55       # Meta-model P(profitable) below this = no trade
+full_size_threshold = 0.70      # Meta-model P(profitable) above this = full position
+
+# Pairs Kalman strategy — statistical arbitrage on cointegrated pairs.
+# Set trading.strategy = "pairs_kalman" to activate.
+[strategy.pairs_kalman]
+pair_b = "ETH-USDT"            # Secondary pair for spread computation
+entry_zscore = 2.0              # Enter when spread z-score exceeds this
+exit_zscore = 0.5               # Exit when spread z-score returns to this
+lookback = 50                   # Rolling window for z-score computation
+delta = 0.0001                  # Kalman process noise (how fast hedge ratio adapts)
+min_half_life = 2.0             # Min OU half-life to confirm mean-reversion
+max_half_life = 100.0           # Max OU half-life (above = not mean-reverting)
