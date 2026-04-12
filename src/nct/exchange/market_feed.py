@@ -160,3 +160,109 @@ class MarketFeed:
     @property
     def connected_pairs(self) -> list[str]:
         return list(self._latest_tickers.keys())
+
+
+class HyperliquidMarketFeed:
+    """WebSocket market feed for Hyperliquid via SDK subscription (#93).
+
+    Uses the hyperliquid-python-sdk Info.subscribe() for real-time
+    mid-price updates. Converts to internal Ticker format.
+    """
+
+    def __init__(
+        self,
+        pairs: list[str],
+        *,
+        demo_mode: bool = True,
+    ) -> None:
+        self._pairs = pairs
+        self._demo_mode = demo_mode
+        self._latest_tickers: dict[str, Ticker] = {}
+        self._ticker_callbacks: list[TickerCallback] = []
+        self._running = False
+        self._info = None
+
+    def on_ticker(self, callback: TickerCallback) -> None:
+        self._ticker_callbacks.append(callback)
+
+    def get_latest_ticker(self, inst_id: str) -> Ticker | None:
+        return self._latest_tickers.get(inst_id)
+
+    async def start(self) -> None:
+        from datetime import UTC, datetime
+        from decimal import Decimal
+
+        from hyperliquid.info import Info
+        from hyperliquid.utils import constants
+
+        base_url = (
+            constants.TESTNET_API_URL if self._demo_mode
+            else constants.MAINNET_API_URL
+        )
+        self._info = Info(base_url, skip_ws=False)
+        self._running = True
+
+        def _to_inst_id(coin: str) -> str:
+            return f'{coin}-USDT'
+
+        def _on_all_mids(data: dict) -> None:
+            """Handle all-mids subscription updates."""
+            mids = data.get('mids', data) if isinstance(data, dict) else {}
+            now = datetime.now(UTC)
+            for coin, px_str in mids.items():
+                inst_id = _to_inst_id(coin)
+                if inst_id not in [p for p in self._pairs]:
+                    continue
+                try:
+                    price = Decimal(str(px_str))
+                    ticker = Ticker(
+                        inst_id=inst_id,
+                        last=price,
+                        bid=price,
+                        ask=price,
+                        bid_size=Decimal(0),
+                        ask_size=Decimal(0),
+                        volume_24h=Decimal(0),
+                        timestamp=now,
+                    )
+                    self._latest_tickers[inst_id] = ticker
+                    self._dispatch_ticker(ticker)
+                except (ValueError, KeyError):
+                    pass
+
+        self._info.subscribe(
+            {'type': 'allMids'}, _on_all_mids,
+        )
+        log.info(
+            'hyperliquid_feed_started',
+            pairs=self._pairs, demo=self._demo_mode,
+        )
+
+    async def stop(self) -> None:
+        self._running = False
+        if self._info:
+            self._info.disconnect_websocket()
+        log.info('hyperliquid_feed_stopped')
+
+    def _dispatch_ticker(self, ticker: Ticker) -> None:
+        for callback in self._ticker_callbacks:
+            try:
+                result = callback(ticker)
+                if asyncio.iscoroutine(result):
+                    task = asyncio.ensure_future(result)
+                    task.add_done_callback(
+                        lambda t: t.exception() if not t.cancelled() else None,
+                    )
+            except Exception:
+                log.exception(
+                    'ticker_callback_error',
+                    inst_id=ticker.inst_id,
+                )
+
+    @property
+    def is_running(self) -> bool:
+        return self._running
+
+    @property
+    def connected_pairs(self) -> list[str]:
+        return list(self._latest_tickers.keys())

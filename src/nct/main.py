@@ -19,7 +19,7 @@ from nct.diagnostics import DiagnosticEngine
 from nct.exceptions import ExchangeError
 from nct.exchange.base import IExchange
 from nct.exchange.factory import create_exchange_client
-from nct.exchange.market_feed import MarketFeed
+from nct.exchange.market_feed import HyperliquidMarketFeed, MarketFeed
 from nct.executor import OrderExecutor
 from nct.logging_setup import setup_logging
 from nct.notifier import TelegramNotifier
@@ -255,10 +255,15 @@ class TradingAgent:
             portfolio=self._portfolio,
         )
 
-        # 13. Market feed (WebSocket) — currently OKX-only.
-        # For Bybit, we fall back to REST polling via DataProvider.
+        # 13. Market feed (WebSocket) — OKX and Hyperliquid.
+        # Coinbase and Bybit fall back to REST polling via DataProvider.
         if self._config.exchange == 'okx':
             self._market_feed = MarketFeed(
+                self._config.trading.pairs,
+                demo_mode=active_creds.demo_mode,
+            )
+        elif self._config.exchange == 'hyperliquid':
+            self._market_feed = HyperliquidMarketFeed(
                 self._config.trading.pairs,
                 demo_mode=active_creds.demo_mode,
             )
