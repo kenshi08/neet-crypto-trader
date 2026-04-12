@@ -62,6 +62,30 @@ CREATE TABLE IF NOT EXISTS executor_log (
     FOREIGN KEY (trade_id) REFERENCES trades(id)
 );
 
+CREATE TABLE IF NOT EXISTS trade_analytics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_id INTEGER NOT NULL,
+    inst_id TEXT NOT NULL,
+    strategy TEXT,
+    signal_confidence REAL,
+    intended_entry_price TEXT,
+    actual_entry_price TEXT,
+    entry_slippage_pct REAL,
+    intended_size TEXT,
+    actual_filled_size TEXT,
+    fill_rate REAL,
+    exit_reason TEXT,
+    exit_slippage_pct REAL,
+    entry_latency_ms REAL,
+    sl_placement_latency_ms REAL,
+    tp_placement_latency_ms REAL,
+    order_retry_count INTEGER DEFAULT 0,
+    fees_paid TEXT,
+    opened_at TEXT,
+    closed_at TEXT,
+    FOREIGN KEY (trade_id) REFERENCES trades(id)
+);
+
 CREATE TABLE IF NOT EXISTS telegram_commands (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp TEXT NOT NULL,
@@ -257,6 +281,144 @@ class Database:
         )
         await self.conn.commit()
 
+
+    # -- Trade analytics ---------------------------------------------------
+
+    async def record_trade_analytics_open(
+        self,
+        *,
+        trade_id: int,
+        inst_id: str,
+        strategy: str = '',
+        signal_confidence: float = 0.0,
+        intended_entry_price: str = '',
+        actual_entry_price: str = '',
+        entry_slippage_pct: float = 0.0,
+        intended_size: str = '',
+        actual_filled_size: str = '',
+        fill_rate: float = 1.0,
+        entry_latency_ms: float = 0.0,
+        sl_placement_latency_ms: float = 0.0,
+        tp_placement_latency_ms: float = 0.0,
+        fees_paid: str = '0',
+        opened_at: datetime | None = None,
+    ) -> None:
+        ts = opened_at.isoformat() if opened_at else ''
+        await self.conn.execute(
+            """INSERT INTO trade_analytics
+               (trade_id, inst_id, strategy, signal_confidence,
+                intended_entry_price, actual_entry_price, entry_slippage_pct,
+                intended_size, actual_filled_size, fill_rate,
+                entry_latency_ms, sl_placement_latency_ms, tp_placement_latency_ms,
+                fees_paid, opened_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                trade_id, inst_id, strategy, signal_confidence,
+                intended_entry_price, actual_entry_price, entry_slippage_pct,
+                intended_size, actual_filled_size, fill_rate,
+                entry_latency_ms, sl_placement_latency_ms, tp_placement_latency_ms,
+                fees_paid, ts,
+            ),
+        )
+        await self.conn.commit()
+
+    async def record_trade_analytics_close(
+        self,
+        *,
+        trade_id: int,
+        exit_reason: str = '',
+        exit_slippage_pct: float = 0.0,
+        closed_at: datetime | None = None,
+    ) -> None:
+        ts = closed_at.isoformat() if closed_at else ''
+        await self.conn.execute(
+            """UPDATE trade_analytics
+               SET exit_reason = ?, exit_slippage_pct = ?, closed_at = ?
+               WHERE trade_id = ?""",
+            (exit_reason, exit_slippage_pct, ts, trade_id),
+        )
+        await self.conn.commit()
+
+    async def get_trade_analytics_summary(
+        self, *, days: int | None = None,
+    ) -> dict:
+        """Aggregate trade analytics for /stats command."""
+        where = ''
+        params: tuple = ()
+        if days is not None:
+            where = "WHERE a.opened_at >= datetime('now', ?)"
+            params = (f'-{days} days',)
+
+        cursor = await self.conn.execute(
+            f"""SELECT
+                COUNT(*) as total_trades,
+                SUM(CASE WHEN t.pnl IS NOT NULL AND CAST(t.pnl AS REAL) > 0 THEN 1 ELSE 0 END) as wins,
+                SUM(CASE WHEN t.pnl IS NOT NULL AND CAST(t.pnl AS REAL) <= 0 THEN 1 ELSE 0 END) as losses,
+                SUM(CAST(t.pnl AS REAL)) as total_pnl,
+                AVG(a.entry_slippage_pct) as avg_slippage,
+                AVG(a.entry_latency_ms) as avg_entry_latency_ms,
+                AVG(a.fill_rate) as avg_fill_rate,
+                SUM(CAST(a.fees_paid AS REAL)) as total_fees
+            FROM trade_analytics a
+            LEFT JOIN trades t ON a.trade_id = t.id
+            {where}""",
+            params,
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return {}
+        return dict(row)
+
+    async def get_trade_analytics_by_pair(
+        self, *, days: int | None = None,
+    ) -> list[dict]:
+        """Per-pair analytics breakdown."""
+        where = ''
+        params: tuple = ()
+        if days is not None:
+            where = "WHERE a.opened_at >= datetime('now', ?)"
+            params = (f'-{days} days',)
+
+        cursor = await self.conn.execute(
+            f"""SELECT
+                a.inst_id,
+                COUNT(*) as trades,
+                SUM(CASE WHEN CAST(t.pnl AS REAL) > 0 THEN 1 ELSE 0 END) as wins,
+                SUM(CAST(t.pnl AS REAL)) as pnl
+            FROM trade_analytics a
+            LEFT JOIN trades t ON a.trade_id = t.id
+            {where}
+            GROUP BY a.inst_id
+            ORDER BY pnl DESC""",
+            params,
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+    async def get_trade_analytics_by_exit_reason(
+        self, *, days: int | None = None,
+    ) -> list[dict]:
+        """P&L breakdown by exit reason."""
+        where = ''
+        params: tuple = ()
+        if days is not None:
+            where = "WHERE a.opened_at >= datetime('now', ?)"
+            params = (f'-{days} days',)
+
+        cursor = await self.conn.execute(
+            f"""SELECT
+                a.exit_reason,
+                COUNT(*) as trades,
+                SUM(CAST(t.pnl AS REAL)) as pnl
+            FROM trade_analytics a
+            LEFT JOIN trades t ON a.trade_id = t.id
+            {where}
+            GROUP BY a.exit_reason
+            ORDER BY trades DESC""",
+            params,
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
 
     # -- Telegram command log ---------------------------------------------
 

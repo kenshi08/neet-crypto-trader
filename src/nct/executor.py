@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from decimal import Decimal
 
 import structlog
@@ -35,11 +36,13 @@ class OrderExecutor:
         portfolio: PortfolioTracker,
         budget_manager: BudgetManager,
         protection_manager: ProtectionManager,
+        db=None,
     ) -> None:
         self._client = client
         self._portfolio = portfolio
         self._budget = budget_manager
         self._protections = protection_manager
+        self._db = db  # Database reference for trade analytics (optional)
 
     async def execute_trade(
         self,
@@ -69,11 +72,13 @@ class OrderExecutor:
             td_mode=TdMode.CASH,
         )
 
+        t0 = time.monotonic()
         try:
             order_resp = await self._client.place_order(order_req)
         except Exception:
             log.exception('order_placement_failed', inst_id=inst_id)
             return None
+        entry_latency_ms = (time.monotonic() - t0) * 1000
 
         # Determine actual fill size and price (handles partial fills)
         actual_size = order_resp.filled_size if order_resp.filled_size > 0 else decision.size
@@ -107,6 +112,7 @@ class OrderExecutor:
         # Place server-side stop-loss (CRITICAL — safety invariant)
         # If this fails, we MUST reverse the entry. No unprotected positions.
         # Use actual_size (not decision.size) to match the filled quantity.
+        t1 = time.monotonic()
         try:
             sl_algo_id = await self._client.place_stop_loss(
                 inst_id=inst_id,
@@ -126,9 +132,11 @@ class OrderExecutor:
                 size=actual_size,
             )
             return None
+        sl_latency_ms = (time.monotonic() - t1) * 1000
 
         # Place server-side take-profit. If this fails, we reverse too —
         # the triple barrier requires all three exits to be in place.
+        t2 = time.monotonic()
         try:
             tp_algo_id = await self._client.place_take_profit(
                 inst_id=inst_id,
@@ -152,6 +160,12 @@ class OrderExecutor:
                 size=actual_size,
             )
             return None
+        tp_latency_ms = (time.monotonic() - t2) * 1000
+
+        # Log latency warnings
+        for label, ms in [('entry', entry_latency_ms), ('sl', sl_latency_ms), ('tp', tp_latency_ms)]:
+            if ms > 2000:
+                log.warning('slow_exchange_call', inst_id=inst_id, call=label, latency_ms=round(ms))
 
         # Track in portfolio (use actual_size and entry_price from fill)
         trade = await self._portfolio.open_trade(
@@ -176,14 +190,46 @@ class OrderExecutor:
             'trade_executed',
             trade_id=trade.trade_id,
             inst_id=inst_id,
-            size=str(decision.size),
+            size=str(actual_size),
             entry_price=str(entry_price),
             stop_loss=str(decision.stop_loss_price),
             take_profit=str(decision.take_profit_price),
             sl_algo_id=sl_algo_id,
             tp_algo_id=tp_algo_id,
             time_limit=decision.time_limit_seconds,
+            entry_latency_ms=round(entry_latency_ms),
+            sl_latency_ms=round(sl_latency_ms),
+            tp_latency_ms=round(tp_latency_ms),
         )
+
+        # Record trade analytics
+        if self._db:
+            intended_price = float(decision.stop_loss_price + decision.take_profit_price) / 2
+            actual_price = float(entry_price)
+            slippage = ((actual_price - intended_price) / intended_price * 100) if intended_price else 0
+            fill_rate = float(actual_size / decision.size) if decision.size else 1.0
+            try:
+                from datetime import UTC, datetime
+
+                await self._db.record_trade_analytics_open(
+                    trade_id=trade.trade_id,
+                    inst_id=inst_id,
+                    strategy=strategy_name,
+                    signal_confidence=signal_confidence,
+                    intended_entry_price=str(intended_price),
+                    actual_entry_price=str(entry_price),
+                    entry_slippage_pct=slippage,
+                    intended_size=str(decision.size),
+                    actual_filled_size=str(actual_size),
+                    fill_rate=fill_rate,
+                    entry_latency_ms=entry_latency_ms,
+                    sl_placement_latency_ms=sl_latency_ms,
+                    tp_placement_latency_ms=tp_latency_ms,
+                    fees_paid=str(abs(fee)),
+                    opened_at=datetime.now(UTC),
+                )
+            except Exception:
+                log.debug('trade_analytics_open_failed', trade_id=trade.trade_id)
 
         return trade
 
@@ -235,6 +281,10 @@ class OrderExecutor:
 
         Returns realized P&L.
         """
+        # Capture trade_id before close removes it from open_trades
+        trade = self._portfolio.open_trades.get(inst_id)
+        trade_id = trade.trade_id if trade else None
+
         pnl = await self._portfolio.close_trade(
             inst_id, exit_price=current_price, reason=reason,
         )
@@ -245,12 +295,24 @@ class OrderExecutor:
         # Update protections
         from datetime import UTC, datetime
 
+        now = datetime.now(UTC)
         self._protections.record_trade_close(
             pair=inst_id,
             pnl=pnl,
             was_stop_loss=was_stop_loss,
-            closed_at=datetime.now(UTC),
+            closed_at=now,
         )
+
+        # Record analytics close
+        if self._db and trade_id:
+            try:
+                await self._db.record_trade_analytics_close(
+                    trade_id=trade_id,
+                    exit_reason=reason,
+                    closed_at=now,
+                )
+            except Exception:
+                log.debug('trade_analytics_close_failed', trade_id=trade_id)
 
         log.info(
             'trade_closed_by_executor',
