@@ -287,8 +287,10 @@ class OKXClient(IExchange):
             }
             if order.price is not None:
                 params['px'] = str(order.price)
-            if order.client_order_id:
-                params['clOrdId'] = order.client_order_id
+            # Generate idempotency key once — reused across retries
+            if not order.client_order_id:
+                order.client_order_id = f'nct_{uuid.uuid4().hex[:16]}'
+            params['clOrdId'] = order.client_order_id
             if order.reduce_only:
                 params['reduceOnly'] = 'true'
 
@@ -490,19 +492,22 @@ class OKXClient(IExchange):
         )
         return response
 
+    @retrier
     async def get_algo_order_status(
         self, inst_id: str, algo_order_id: str,
     ) -> OrderStatus:
         if algo_order_id.startswith('dry_'):
             return OrderStatus.PENDING
 
+        self._ensure_sdk()
         try:
-            result = await self._call(
-                self._trade_api.order_algos_list,
-                ordType='conditional',
-                algoId=algo_order_id,
-                instId=inst_id,
-            )
+            async with self._trade_limiter:
+                result = await self._run_sync(
+                    self._trade_api.order_algos_list,
+                    ordType='conditional',
+                    algoId=algo_order_id,
+                    instId=inst_id,
+                )
             data = self._check_response(result, context='get_algo_order_status')
             if data:
                 state = data[0].get('state', '')
@@ -510,7 +515,7 @@ class OKXClient(IExchange):
                     return OrderStatus.PENDING
                 if state == 'effective' or state == 'filled':
                     return OrderStatus.FILLED
-                if state == 'canceled' or state == 'cancelled':
+                if state in ('canceled', 'cancelled'):
                     return OrderStatus.CANCELLED
             return OrderStatus.CANCELLED
         except Exception:

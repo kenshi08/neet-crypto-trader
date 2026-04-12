@@ -175,16 +175,20 @@ class BybitClient(IExchange):
     def is_demo(self) -> bool:
         return self._demo_mode
 
+    @retrier
     async def get_algo_order_status(
         self, inst_id: str, algo_order_id: str,
     ) -> OrderStatus:
         if algo_order_id.startswith('dry_'):
             return OrderStatus.PENDING
 
+        self._ensure_sdk()
         try:
-            result = self._client.get_open_orders(
-                category='spot', orderId=algo_order_id,
-            )
+            async with self._trade_limiter:
+                result = await self._run_sync(
+                    self._session.get_open_orders,
+                    category='spot', orderId=algo_order_id,
+                )
             data = self._check_response(result, context='get_algo_order_status')
             orders = data.get('list', []) if isinstance(data, dict) else []
             if orders:
@@ -330,8 +334,10 @@ class BybitClient(IExchange):
         }
         if order.price is not None and order.order_type.value == 'limit':
             params['price'] = str(order.price)
-        if order.client_order_id:
-            params['orderLinkId'] = order.client_order_id
+        # Generate idempotency key once — reused across retries
+        if not order.client_order_id:
+            order.client_order_id = f'nct_{uuid.uuid4().hex[:16]}'
+        params['orderLinkId'] = order.client_order_id
 
         async with self._trade_limiter:
             result = await self._run_sync(self._session.place_order, **params)
