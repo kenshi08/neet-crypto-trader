@@ -115,30 +115,38 @@ min_half_life = 2.0             # Min OU half-life to confirm mean-reversion
 max_half_life = 100.0           # Max OU half-life (above = not mean-reverting)
 
 # ===========================================================================
-# Multi-exchange portfolios (optional)
+# Multi-exchange portfolios
 # ===========================================================================
 # When [[portfolios]] entries are present, the bot runs in multi-exchange mode.
 # Each portfolio gets its own exchange client, position tracker, and budget.
 # All portfolios share the composite quant strategy and cross-exchange guards.
-# Uncomment and configure to enable.
+#
+# Comment out ALL [[portfolios]] sections to run single-exchange mode
+# (uses EXCHANGE env var + [trading] pairs above).
 
-# [[portfolios]]
-# exchange = "hyperliquid"
-# pairs = ["BTC-USDT", "ETH-USDT"]
-# quote_currency = "USDC"
-# budget_amount = 200
-# max_positions = 2
+# --- Hyperliquid: Perpetual futures, cheapest fees, shorting ---
+# Best for: directional perps, funding rate signals
+[[portfolios]]
+exchange = "hyperliquid"
+pairs = ["BTC-USDT", "ETH-USDT", "SOL-USDT"]
+quote_currency = "USDC"
+budget_amount = 200
+max_positions = 2
 
-# [[portfolios]]
-# exchange = "okx"
-# pairs = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "AVAX-USDT", "LINK-USDT"]
-# quote_currency = "USDT"
-# budget_amount = 175
-# max_positions = 3
+# --- OKX Singapore: Deep liquidity, altcoin selection ---
+# Best for: altcoin mean-reversion, regime-based rotation
+[[portfolios]]
+exchange = "okx"
+pairs = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "AVAX-USDT"]
+quote_currency = "USDT"
+budget_amount = 175
+max_positions = 3
 
-# [[portfolios]]
-# exchange = "coinbase"
-# pairs = ["BTC-USD", "ETH-USD"]
-# quote_currency = "USD"
-# budget_amount = 125
-# max_positions = 2
+# --- Coinbase: USD spot, regulated, conservative ---
+# Best for: long-only high-conviction spot positions
+[[portfolios]]
+exchange = "coinbase"
+pairs = ["BTC-USDC", "ETH-USDC"]
+quote_currency = "USDC"
+budget_amount = 125
+max_positions = 2

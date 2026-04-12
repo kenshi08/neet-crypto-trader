@@ -1,131 +1,72 @@
-# Live-reduced config — minimal budget for first 2 weeks of live trading.
+# Live-reduced config — minimal budget for graduated live deployment.
 #
 # Graduation plan:
-#   Week 1-2: $100/week on OKX SG spot (this config)
-#   Week 3-4: $250/week, add Hyperliquid perps (update amount_usdt + exchange)
-#   Week 5+:  Full budget based on validated performance
-#
-# Criteria to increase budget:
-#   - Win rate > 45% over the period
-#   - Max drawdown < configured limit
-#   - No barrier failures
-#   - Consistent with paper-validation results
-#
-# Usage: NCT_CONFIG=config/live-reduced.toml in .env
-# IMPORTANT: Passes live-mode validation. Set <EXCHANGE>_DEMO_MODE=false.
+#   Week 1-2: This config ($100/week total across 3 exchanges)
+#   Week 3-4: Increase to live-conservative ($300/week)
+#   Week 5+:  Scale based on validated performance
 
 [trading]
-pairs = ["BTC-USDT", "ETH-USDT", "SOL-USDT"]
+pairs = ["BTC-USDT", "ETH-USDT"]
 strategy = "composite"
 timeframe = "15m"
-max_open_positions = 2              # Conservative: 2 simultaneous max
+max_open_positions = 3
 poll_interval_seconds = 15
-reconciliation_interval = 5
-
-# Regime detection on
-auto_regime_detection = true
-regime_timeframe = "1H"
-
-confirmation_timeframes = ["1H"]
-
-[trading.regime_map]
-trending_up = "trend_following"
-trending_down = "trend_following"
-ranging_low_vol = "mean_reversion"
-ranging_high_vol = "volatility_breakout"
-extreme_vol = ""
+reconciliation_interval = 10
 
 [budget]
 period = "weekly"
-amount_usdt = 100                   # Start small — $100/week
-max_loss_pct = 5.0                  # Stop at -5% ($5 loss)
-max_gain_pct = 15.0                 # Take profits at +15%
-max_position_pct = 20.0             # Max $20 per trade
-daily_loss_limit_usdt = 15          # Hard daily cap
-daily_notional_cap_usdt = 300
+amount_usdt = 100
+max_loss_pct = 5.0
+max_gain_pct = 15.0
+max_position_pct = 25.0
+daily_loss_limit_usdt = 15
 
 [risk]
 stop_loss_pct = 2.5
 take_profit_pct = 4.0
 time_limit_seconds = 3600
-min_signal_confidence = 0.6         # Higher bar for live
-
 trailing_stop = true
 trailing_stop_activation_pct = 2.0
-trailing_stop_delta_pct = 0.8
+trailing_stop_delta_pct = 1.0
 breakeven_trigger_pct = 1.5
-
+min_signal_confidence = 0.6
 exchange_fee_pct = 0.1
-min_profit_after_fees_pct = 0.5
-
-use_volatility_parity = true
-target_risk_pct = 0.8               # Slightly lower risk target for live
-
-drawdown_scaling = true
-drawdown_reduction_per_loss = 15.0
-drawdown_max_reduction_pct = 60.0
-
-max_correlated_positions = 1        # Very conservative: 1 per group
-
+max_correlated_positions = 1
 volatility_circuit_breaker_multiplier = 2.5
 volatility_lookback_candles = 20
-volatility_reference_pair = "BTC-USDT"
-
-[risk.correlation_groups]
-btc_ecosystem = ["BTC-USDT", "ETH-USDT", "SOL-USDT"]
-
-[[risk.partial_tp]]
-pct = 2.5
-close_fraction = 0.4
 
 [market_selection]
-min_volume_usdt = 100000            # Higher bar for live
+min_volume_usdt = 100000
 max_spread_pct = 0.5
-blacklist = []
 
 [telegram]
 min_severity = "low"
-quiet_hours_start = 23
-quiet_hours_end = 7
-quiet_hours_timezone = "Asia/Singapore"
-quiet_hours_min_severity = "high"
 
-[strategy.momentum]
-rsi_period = 14
-rsi_oversold = 30.0
-rsi_overbought = 70.0
-macd_fast = 12
-macd_slow = 26
-macd_signal = 9
+[strategy.composite]
+pe_threshold = 0.90
+no_trade_threshold = 0.55
+full_size_threshold = 0.70
+llm_enabled = true
 
-[strategy.mean_reversion]
-bb_period = 20
-bb_std = 2.0
-volume_ma_period = 20
-volume_multiplier = 1.3
-atr_period = 14
-atr_sl_multiplier = 1.5
-atr_tp_multiplier = 2.0
+# --- Multi-exchange live portfolios (minimal budget) ---
 
-[strategy.trend_following]
-ema_fast = 9
-ema_slow = 21
-adx_period = 14
-adx_threshold = 25.0
-atr_period = 14
-atr_sl_multiplier = 2.0
-atr_tp_multiplier = 3.0
-volume_ma_period = 20
-volume_multiplier = 1.2
+[[portfolios]]
+exchange = "hyperliquid"
+pairs = ["BTC-USDT", "ETH-USDT"]
+quote_currency = "USDC"
+budget_amount = 40
+max_positions = 1
 
-[strategy.volatility_breakout]
-lookback_period = 20
-atr_period = 14
-breakout_atr_multiplier = 0.5
-atr_sl_multiplier = 1.0
-atr_tp_multiplier = 2.0
-volume_ma_period = 20
-volume_multiplier = 1.2
-use_squeeze = true
-keltner_period = 20
-keltner_atr_multiplier = 1.5
+[[portfolios]]
+exchange = "okx"
+pairs = ["BTC-USDT", "ETH-USDT"]
+quote_currency = "USDT"
+budget_amount = 35
+max_positions = 1
+
+[[portfolios]]
+exchange = "coinbase"
+pairs = ["BTC-USDC", "ETH-USDC"]
+quote_currency = "USDC"
+budget_amount = 25
+max_positions = 1
