@@ -37,6 +37,15 @@ class IExchange(ABC):
     def is_demo(self) -> bool:
         """Whether this client is in demo/testnet mode."""
 
+    @property
+    def supports_shorting(self) -> bool:
+        """Whether this exchange supports short selling (perpetuals/margin).
+
+        Override in subclasses that support short selling. Defaults to False
+        for spot-only exchanges like Coinbase.
+        """
+        return False
+
     # ===================================================================
     # Market data
     # ===================================================================

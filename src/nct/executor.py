@@ -88,8 +88,8 @@ class OrderExecutor:
             log.warning('execute_rejected_decision', inst_id=inst_id)
             return None
 
-        side = Side.BUY
-        close_side = Side.SELL  # side for SL/TP orders (opposite of entry)
+        side = Side(decision.side)
+        close_side = Side.SELL if side == Side.BUY else Side.BUY
 
         # Place the entry order
         order_req = OrderRequest(
@@ -135,7 +135,7 @@ class OrderExecutor:
                 try:
                     reverse_req = OrderRequest(
                         inst_id=inst_id,
-                        side=Side.SELL,
+                        side=close_side,
                         order_type=OrderType.MARKET,
                         size=actual_size,
                         td_mode=TdMode.CASH,
@@ -423,9 +423,13 @@ class OrderExecutor:
             if not price:
                 continue
 
-            # Update high-water mark
-            if trade.high_water_mark is None or price > trade.high_water_mark:
-                trade.high_water_mark = price
+            # Update high/low-water mark based on side
+            if trade.side == 'buy':
+                if trade.high_water_mark is None or price > trade.high_water_mark:
+                    trade.high_water_mark = price
+            else:  # short — track low-water mark (stored in high_water_mark field)
+                if trade.high_water_mark is None or price < trade.high_water_mark:
+                    trade.high_water_mark = price
 
             # Breakeven move (fires once, before trailing takes over)
             if not trade.breakeven_applied and risk_config.breakeven_trigger_pct > 0:
@@ -478,17 +482,27 @@ class OrderExecutor:
         if not trade.entry_price or not trade.stop_loss_price:
             return
 
-        trigger = trade.entry_price * (1 + risk_config.breakeven_trigger_pct / 100)
-        if price < trigger:
-            return
+        is_long = trade.side == 'buy'
+        pct = risk_config.breakeven_trigger_pct / 100
+        notional = trade.size * trade.entry_price
+        fee_pct = trade.fee / notional if notional > 0 else Decimal(0)
 
-        # Breakeven = entry + estimated fees (entry_fee + estimated exit_fee)
-        fee_pct = trade.fee / (trade.size * trade.entry_price) if trade.size * trade.entry_price > 0 else Decimal(0)
-        breakeven_price = trade.entry_price * (1 + fee_pct * 2)  # cover round-trip fees
-
-        # Only move SL up, never down
-        if breakeven_price <= trade.stop_loss_price:
-            return
+        if is_long:
+            trigger = trade.entry_price * (1 + pct)
+            if price < trigger:
+                return
+            breakeven_price = trade.entry_price * (1 + fee_pct * 2)
+            # Only move SL up, never down
+            if breakeven_price <= trade.stop_loss_price:
+                return
+        else:
+            trigger = trade.entry_price * (1 - pct)
+            if price > trigger:
+                return
+            breakeven_price = trade.entry_price * (1 - fee_pct * 2)
+            # Only move SL down, never up (for shorts)
+            if breakeven_price >= trade.stop_loss_price:
+                return
 
         close_side = Side.SELL if trade.side == 'buy' else Side.BUY
         try:
@@ -512,20 +526,30 @@ class OrderExecutor:
             log.exception('breakeven_move_failed', inst_id=trade.inst_id)
 
     async def _check_trailing_stop(self, trade: TrackedTrade, price: Decimal, risk_config) -> None:
-        """Update SL to trail behind high-water mark once activated."""
+        """Update SL to trail behind high/low-water mark once activated."""
         if not trade.entry_price or not trade.high_water_mark:
             return
 
-        activation_price = trade.entry_price * (1 + risk_config.trailing_stop_activation_pct / 100)
-        if trade.high_water_mark < activation_price:
-            return  # Not yet activated
+        is_long = trade.side == 'buy'
+        act_pct = risk_config.trailing_stop_activation_pct / 100
+        delta_pct = risk_config.trailing_stop_delta_pct / 100
 
-        # Calculate trailing SL: high_water_mark - delta
-        trailing_sl = trade.high_water_mark * (1 - risk_config.trailing_stop_delta_pct / 100)
-
-        # Only ratchet up, never down
-        if trade.stop_loss_price and trailing_sl <= trade.stop_loss_price:
-            return
+        if is_long:
+            activation_price = trade.entry_price * (1 + act_pct)
+            if trade.high_water_mark < activation_price:
+                return
+            trailing_sl = trade.high_water_mark * (1 - delta_pct)
+            # Only ratchet up, never down
+            if trade.stop_loss_price and trailing_sl <= trade.stop_loss_price:
+                return
+        else:
+            activation_price = trade.entry_price * (1 - act_pct)
+            if trade.high_water_mark > activation_price:
+                return  # low_water_mark hasn't reached activation
+            trailing_sl = trade.high_water_mark * (1 + delta_pct)
+            # Only ratchet down, never up (for shorts)
+            if trade.stop_loss_price and trailing_sl >= trade.stop_loss_price:
+                return
 
         close_side = Side.SELL if trade.side == 'buy' else Side.BUY
         try:
@@ -563,9 +587,15 @@ class OrderExecutor:
             if trigger_pct <= 0 or close_fraction <= 0:
                 continue
 
-            trigger_price = trade.entry_price * (1 + trigger_pct / 100)
-            if price < trigger_price:
-                continue
+            is_long = trade.side == 'buy'
+            if is_long:
+                trigger_price = trade.entry_price * (1 + trigger_pct / 100)
+                if price < trigger_price:
+                    continue
+            else:
+                trigger_price = trade.entry_price * (1 - trigger_pct / 100)
+                if price > trigger_price:
+                    continue
 
             # Execute partial close
             close_size = trade.size * close_fraction
@@ -573,7 +603,7 @@ class OrderExecutor:
                 continue
 
             try:
-                close_side = Side.SELL if trade.side == 'buy' else Side.BUY
+                close_side = Side.SELL if is_long else Side.BUY
                 order_req = OrderRequest(
                     inst_id=trade.inst_id,
                     side=close_side,
@@ -591,7 +621,10 @@ class OrderExecutor:
                 # Update SL/TP for reduced size (cancel and re-place)
                 await self._update_barriers_for_size(trade, remaining)
 
-                pnl = (price - trade.entry_price) * close_size
+                if is_long:
+                    pnl = (price - trade.entry_price) * close_size
+                else:
+                    pnl = (trade.entry_price - price) * close_size
                 log.info(
                     'partial_tp_fired',
                     inst_id=trade.inst_id,

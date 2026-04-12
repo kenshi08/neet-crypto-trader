@@ -202,6 +202,7 @@ class TradingAgent:
             risk_config=self._config.risk,
             trading_config=self._config.trading,
             portfolio=self._portfolio,
+            supports_shorting=self._client.supports_shorting,
         )
 
         # 9. Order executor
@@ -413,7 +414,9 @@ class TradingAgent:
                 continue
 
             if result.signal == Signal.BUY:
-                await self._try_open_trade(pair, result, current_prices)
+                await self._try_open_trade(pair, result, current_prices, side='buy')
+            elif result.signal == Signal.SELL:
+                await self._try_open_trade(pair, result, current_prices, side='sell')
 
         # Log periodic status
         log.info(
@@ -425,8 +428,10 @@ class TradingAgent:
             period_pnl=str(self._budget_manager.realized_pnl),
         )
 
-    async def _try_open_trade(self, pair: str, result, current_prices: dict) -> None:
-        """Attempt to open a trade after strategy signals BUY."""
+    async def _try_open_trade(
+        self, pair: str, result, current_prices: dict, side: str = 'buy',
+    ) -> None:
+        """Attempt to open a trade after strategy signals BUY or SELL."""
         from decimal import Decimal
 
         price = current_prices.get(pair)
@@ -458,7 +463,7 @@ class TradingAgent:
         # Risk check
         decision = self._risk_manager.evaluate_trade(
             inst_id=pair,
-            side='buy',
+            side=side,
             current_price=price,
             available_balance=available,
             signal_confidence=result.confidence,
@@ -480,7 +485,7 @@ class TradingAgent:
         if trade and self._notifier:
             await self._notifier.notify_trade_opened(
                 inst_id=pair,
-                side='buy',
+                side=side,
                 size=decision.size,
                 entry_price=trade.entry_price,
                 stop_loss=decision.stop_loss_price,

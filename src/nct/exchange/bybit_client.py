@@ -175,6 +175,10 @@ class BybitClient(IExchange):
     def is_demo(self) -> bool:
         return self._demo_mode
 
+    @property
+    def supports_shorting(self) -> bool:
+        return True
+
     @retrier
     async def get_order_detail(
         self, inst_id: str, order_id: str,
