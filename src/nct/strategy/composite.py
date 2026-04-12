@@ -27,6 +27,7 @@ import structlog
 
 from nct.quant.entropy import PermutationEntropyFilter
 from nct.quant.features import QuantFeatures
+from nct.quant.llm_engine import LLMReasoningEngine
 from nct.quant.meta_model import QuantMetaModel
 from nct.quant.regime import BOCPD, HMMRegimeDetector
 from nct.strategy.base import IStrategy
@@ -47,6 +48,9 @@ class CompositeStrategy(IStrategy):
         meta_model_path: str = '',
         no_trade_threshold: float = 0.55,
         full_size_threshold: float = 0.70,
+        llm_enabled: bool = True,
+        llm_model: str = 'claude-haiku-4-5-20251001',
+        llm_max_calls_per_hour: int = 30,
         **_kwargs: Any,
     ) -> None:
         # All 4 TA strategies as feature generators (lazy import to break cycle)
@@ -81,6 +85,15 @@ class CompositeStrategy(IStrategy):
             except Exception:
                 log.warning('composite_meta_model_load_failed', path=meta_model_path)
 
+        # LLM reasoning engine — anomaly guard + thesis generation
+        self._llm = LLMReasoningEngine(
+            model=llm_model,
+            max_calls_per_hour=llm_max_calls_per_hour,
+        ) if llm_enabled else None
+
+        # Last LLM assessment (populated after each non-HOLD signal)
+        self._last_llm_assessment: object | None = None
+
     @property
     def name(self) -> str:
         return 'composite'
@@ -96,6 +109,15 @@ class CompositeStrategy(IStrategy):
     @property
     def hmm(self) -> HMMRegimeDetector:
         return self._hmm
+
+    @property
+    def llm(self) -> LLMReasoningEngine | None:
+        return self._llm
+
+    @property
+    def last_llm_assessment(self) -> object | None:
+        """Last LLM anomaly assessment (from most recent evaluate call)."""
+        return self._last_llm_assessment
 
     # ------------------------------------------------------------------
     # IStrategy interface
@@ -187,25 +209,72 @@ class CompositeStrategy(IStrategy):
         features = self._build_features(last, metadata)
 
         # Meta-model prediction
-        prediction = self._meta.predict(features)
+        prediction = self._meta.predict(features, compute_shap=True)
+
+        # LLM anomaly guard: check for conflicting signals before trading
+        llm_multiplier = 1.0
+        llm_note = ''
+        if prediction.direction != 0 and self._llm:
+            cp_prob = float(last.get('bocpd_cp', 0))
+            pe_val = float(last.get('pe_value', 0))
+            hmm_conf = max(
+                float(last.get('hmm_bull', 0)),
+                float(last.get('hmm_bear', 0)),
+                float(last.get('hmm_chop', 0)),
+            )
+
+            # Build conflict description for LLM
+            conflicts = []
+            if cp_prob > 0.15:
+                conflicts.append(
+                    f'BOCPD changepoint prob={cp_prob:.2f} (regime may be shifting)'
+                )
+            if pe_val > 0.85:
+                conflicts.append(
+                    f'High entropy PE={pe_val:.2f} (market near-random)'
+                )
+            if hmm_conf < 0.5:
+                conflicts.append(
+                    f'Low regime confidence={hmm_conf:.2f} (unclear regime)'
+                )
+
+            if conflicts:
+                # LLM as consultative signal — adjusts confidence, never blocks.
+                # Uses synchronous fallback (BOCPD-based rules). The async LLM
+                # API is available via assess_anomaly() for richer reasoning.
+                assessment = LLMReasoningEngine._fallback_anomaly(cp_prob)
+                self._last_llm_assessment = assessment
+                llm_multiplier = assessment.size_multiplier
+                llm_note = f' | LLM: {assessment.recommendation} ({llm_multiplier:.0%})'
+                log.info(
+                    'llm_assessment',
+                    conflicts=conflicts,
+                    recommendation=assessment.recommendation,
+                    size_multiplier=llm_multiplier,
+                )
+            else:
+                self._last_llm_assessment = None
+
+        # Apply LLM size adjustment to bet size
+        adjusted_bet = prediction.bet_size * llm_multiplier
 
         dataframe.iloc[-1, dataframe.columns.get_loc('enter_long')] = (
-            prediction.direction == 1 and prediction.bet_size > 0
+            prediction.direction == 1 and adjusted_bet > 0
         )
         dataframe.iloc[-1, dataframe.columns.get_loc('enter_short')] = (
-            prediction.direction == -1 and prediction.bet_size > 0
+            prediction.direction == -1 and adjusted_bet > 0
         )
 
-        confidence = prediction.confidence * prediction.bet_size
+        confidence = prediction.confidence * adjusted_bet
         dataframe['signal_confidence'] = float(max(0.3, min(1.0, confidence)))
 
         dir_str = {1: 'LONG', -1: 'SHORT'}.get(prediction.direction, 'FLAT')
         dataframe['signal_reason'] = (
             f'Meta-model: {dir_str} P={prediction.probability:.3f} '
-            f'bet={prediction.bet_size:.2f} '
+            f'bet={adjusted_bet:.2f} '
             f'[PE={last.get("pe_value", 0):.2f} '
             f'HMM=B{last.get("hmm_bull", 0):.0%}/R{last.get("hmm_bear", 0):.0%} '
-            f'CP={last.get("bocpd_cp", 0):.2f}]'
+            f'CP={last.get("bocpd_cp", 0):.2f}{llm_note}]'
         )
         return dataframe
 
