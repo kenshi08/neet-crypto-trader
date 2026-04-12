@@ -55,16 +55,17 @@ neet-crypto-trader/
 ├── docker-compose.yml
 ├── .env.example                    # Template: COINBASE_*, BYBIT_*, OKX_*, EXCHANGE selector
 ├── config/
-│   └── default.toml                # Trading config (budget, pairs, strategy, risk)
+│   └── default.toml                # Trading config (budget, pairs, strategy, risk, telegram)
 ├── src/
 │   └── nct/                        # Main package
 │       ├── __init__.py
 │       ├── main.py                 # TradingAgent orchestrator, entry point
-│       ├── config.py               # Pydantic settings (credentials, budget, trading)
+│       ├── config.py               # Pydantic settings (credentials, budget, trading, risk, telegram)
 │       ├── runtime_mode.py         # PAPER/DEMO/LIVE mode detection (#39)
+│       ├── diagnostics.py          # DiagnosticEngine — explains trade approval/denial (#44)
 │       ├── exchange/
 │       │   ├── __init__.py
-│       │   ├── base.py             # IExchange ABC
+│       │   ├── base.py             # IExchange ABC + get_algo_order_status (#50)
 │       │   ├── factory.py          # create_exchange_client() — picks backend from config
 │       │   ├── coinbase_client.py  # CoinbaseClient — primary, via coinbase-advanced-py
 │       │   ├── bybit_client.py     # BybitClient — via pybit V5 unified
@@ -75,26 +76,33 @@ neet-crypto-trader/
 │       │   ├── __init__.py
 │       │   ├── base.py             # IStrategy ABC
 │       │   ├── factory.py          # create_strategy() + _STRATEGY_REGISTRY (#37)
-│       │   ├── signals.py          # Signal enum + SignalResult
 │       │   ├── momentum.py         # RSI + MACD
 │       │   ├── mean_reversion.py   # Bollinger Bands + volume
-│       │   └── data_provider.py    # OHLCV fetching, caching, DataFrame conversion
+│       │   ├── data_provider.py    # OHLCV fetching, caching, DataFrame conversion
+│       │   └── market_selector.py  # Volume, spread, blacklist pair filter (#56)
 │       ├── risk/
 │       │   ├── __init__.py
-│       │   ├── budget_manager.py   # Weekly/monthly budget tracking (SQLite-backed)
+│       │   ├── budget_manager.py   # Weekly/monthly budget + daily notional cap (#58)
 │       │   ├── position_sizer.py   # Per-trade sizing
-│       │   ├── risk_manager.py     # Central gate — every trade passes through
-│       │   └── protections.py      # StoplossGuard, MaxDrawdown, CooldownPeriod
+│       │   ├── risk_manager.py     # Central gate + correlation limits (#57)
+│       │   └── protections.py      # StoplossGuard, MaxDrawdown, CooldownPeriod, VolatilityCircuitBreaker
 │       ├── portfolio/
 │       │   ├── __init__.py
-│       │   └── tracker.py          # Open positions, P&L, persists to DB
-│       ├── executor.py             # OrderExecutor with atomic SL/TP (#36)
-│       ├── notifier.py             # Telegram bot (optional)
+│       │   └── tracker.py          # Open positions, P&L, reconciliation auto-fix (#49)
+│       ├── telegram/
+│       │   ├── __init__.py
+│       │   ├── severity.py         # AlertSeverity enum, quiet hours filtering (#48)
+│       │   └── keyboards.py        # Inline keyboard builders, callback routing (#68)
+│       ├── executor.py             # OrderExecutor: atomic SL/TP, verify barriers, trailing/breakeven/partial exits
+│       ├── notifier.py             # Telegram bot: commands, inline UI, alerts, audit trail
 │       ├── logging_setup.py        # structlog JSON config + rotation
-│       └── db.py                   # SQLite schema, migrations, persistence helpers
-├── tests/                          # pytest + pytest-asyncio, 300+ tests
+│       └── db.py                   # SQLite schema: trades, budget, analytics, commands
+├── tests/                          # pytest + pytest-asyncio, 434 tests
 └── scripts/
-    └── backtest.py                 # Historical backtest runner (fee + slippage aware)
+    ├── backtest.py                 # Historical backtest runner (fee + slippage + regime + per-pair)
+    ├── walk_forward.py             # Walk-forward validation — train/test split (#60)
+    ├── param_stability.py          # Parameter grid search — stability heatmap (#61)
+    └── lookahead_check.py          # Lookahead bias detection (#63)
 ```
 
 ## Configuration
@@ -128,7 +136,8 @@ pairs = ["BTC-USDT", "ETH-USDT", "SOL-USDT"]
 strategy = "momentum"
 timeframe = "15m"
 max_open_positions = 3
-paper_trading = true
+poll_interval_seconds = 10
+reconciliation_interval = 10    # barrier + position checks every N iterations
 
 [budget]
 period = "weekly"
@@ -137,13 +146,40 @@ max_loss_pct = 5.0
 max_gain_pct = 15.0
 max_position_pct = 20.0
 daily_loss_limit_usdt = 100
+daily_notional_cap_usdt = 0     # 0 = disabled
 
 [risk]
 stop_loss_pct = 3.0
 take_profit_pct = 5.0
 time_limit_seconds = 3600
 trailing_stop = false
+trailing_stop_activation_pct = 2.0
+trailing_stop_delta_pct = 1.0
+breakeven_trigger_pct = 0       # 0 = disabled
 min_signal_confidence = 0.6
+max_correlated_positions = 2
+volatility_circuit_breaker_multiplier = 0.0  # 0 = disabled
+volatility_lookback_candles = 20
+volatility_reference_pair = ""
+
+[risk.correlation_groups]
+# btc_beta = ["BTC-USD", "ETH-USD", "SOL-USD"]
+
+# [[risk.partial_tp]]
+# pct = 3.0
+# close_fraction = 0.5
+
+[market_selection]
+min_volume_usdt = 0             # 0 = disabled
+max_spread_pct = 0              # 0 = disabled
+blacklist = []
+
+[telegram]
+min_severity = "low"            # low, medium, high, critical
+quiet_hours_start = -1          # -1 = disabled
+quiet_hours_end = -1
+quiet_hours_timezone = "UTC"
+quiet_hours_min_severity = "critical"
 ```
 
 ## Git Practices
@@ -622,6 +658,12 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. **Updat
 4. **Execution** — Order placement, portfolio tracking, triple barrier → paper trading on OKX demo
 5. **Main Loop** — TradingAgent orchestrator, scheduling, logging, graceful shutdown → autonomous operation
 6. **Hardening** — Backtesting, Telegram notifications, Docker deployment, second strategy
+7. **Operator Intelligence** — `/why`, `/signal`, `/close` commands, alert severity + quiet hours, inline keyboard UI (#44-#48, #68)
+8. **Reconciliation & Resilience** — Auto-fix stale trades, verify SL/TP barriers, partial fill handling, command audit trail (#49-#52)
+9. **Post-Trade Analytics** — `trade_analytics` table, execution latency measurement, `/stats` command (#53-#55)
+10. **Market Selection & Portfolio** — Volume/spread filters, correlation-aware limits, daily notional cap, volatility circuit breaker (#56-#59)
+11. **Research Pipeline** — Walk-forward validation, parameter stability, regime breakdown, lookahead checker, per-pair contribution (#60-#64)
+12. **Trailing & Staged Exits** — Trailing stop activation, breakeven move, partial profit taking (#65-#67)
 
 ## Deployment
 

@@ -7,6 +7,46 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added — Phase 12: Trailing & Staged Exits (#65-#67)
+- Trailing stop activation after minimum gain — ratchets SL behind high-water mark
+- Breakeven stop move — moves SL to entry + fees once profit exceeds trigger
+- Partial profit taking — closes configurable fractions at staged profit targets
+- Unified `check_exit_management()` called every iteration for open positions
+
+### Added — Phase 11: Research Pipeline (#60-#64)
+- Walk-forward validation script (`scripts/walk_forward.py`) — N-window train/test splits with overfitting verdict
+- Parameter stability grid search (`scripts/param_stability.py`) — 2D sweep outputting CSV
+- Regime-tagged performance breakdown in backtest report — trending/ranging/down metrics
+- Lookahead bias checker (`scripts/lookahead_check.py`) — detects forward-looking mistakes
+- Per-pair contribution report — multi-pair backtest with `--pairs` flag
+
+### Added — Phase 10: Market Selection & Portfolio Intelligence (#56-#59)
+- Market selector module — filters pairs by 24h volume, bid-ask spread, and blacklist
+- Correlation-aware position limits — configurable groups prevent concentrated exposure
+- Daily notional cap in BudgetManager — hard limit on total entry notional per day
+- Volatility circuit breaker — halts entries when ATR exceeds N x median ATR
+
+### Added — Phase 9: Post-Trade Analytics (#53-#55)
+- `trade_analytics` DB table — per-trade execution quality (slippage, fill rate, latency, fees)
+- Execution latency measurement — `time.monotonic()` instrumentation on all exchange calls
+- `/stats` Telegram command — aggregate performance with period filters and per-pair breakdown
+
+### Added — Phase 8: Reconciliation & Resilience (#49-#52)
+- Reconciliation auto-fix — stale trades auto-closed, untracked positions detected with CRITICAL alert
+- SL/TP barrier verification — periodic check that algo orders still exist, auto-repair or close
+- Partial fill handling — uses actual `filled_size` for SL/TP sizing, handles zero fills
+- Telegram command audit trail — all commands logged to `telegram_commands` DB table
+- `get_algo_order_status()` added to IExchange and all 3 exchange clients
+
+### Added — Phase 7: Operator Intelligence (#44-#48, #68)
+- `/why <pair>` command — runs signal + risk pipeline, shows per-gate pass/fail
+- `/signal <pair>` command — shows current indicator values (RSI, MACD, ATR, EMA)
+- `/close <pair>` command — closes a single position with P&L reporting
+- `/start` inline keyboard UI — button-based navigation, position cards, confirmations
+- Alert severity levels (low/medium/high/critical) with quiet hours filtering
+- `DiagnosticEngine` — reusable explainability engine for /why and /signal
+- `telegram/severity.py` and `telegram/keyboards.py` subpackage
+
 ### Fixed
 - **CRITICAL: Stop-loss atomicity** — `OrderExecutor` now reverses the entry
   if stop-loss or take-profit placement fails, eliminating the possibility

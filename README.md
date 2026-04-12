@@ -5,13 +5,17 @@ Budget-controlled crypto trading agent supporting **Coinbase**, **OKX**, and **B
 ## Features
 
 - **Multi-exchange** — Switch between Coinbase, OKX, and Bybit via the `EXCHANGE` env var
-- **Budget Controls** — Weekly/monthly capital limits with automatic stop when thresholds hit
-- **Risk Management** — Triple barrier on every position (stop-loss + take-profit + time limit), atomic entry reversal if SL placement fails, server-side stop-losses that survive bot crashes
-- **Paper Trading** — Demo/testnet mode by default, with unambiguous `PAPER_DRY_RUN` / `DEMO_REAL_BALANCE` / `LIVE_REAL_MONEY` mode announcement at startup
-- **Realistic Backtests** — Fee-aware P&L with per-side fee configuration and exchange presets
+- **Budget Controls** — Weekly/monthly capital limits, daily loss limits, daily notional cap
+- **Risk Management** — Triple barrier on every position (SL + TP + time limit), atomic entry reversal, server-side stop-losses, correlation-aware position limits, volatility circuit breaker
+- **Advanced Exits** — Trailing stop with activation threshold, breakeven stop move, partial profit taking at staged targets
+- **Paper Trading** — Demo/testnet mode by default, with unambiguous mode announcement at startup
+- **Realistic Backtests** — Fee-aware, slippage-modeled, with regime breakdown and per-pair contribution
+- **Research Tooling** — Walk-forward validation, parameter stability grid search, lookahead bias checker
 - **Pluggable Strategies** — Config-driven selection between RSI+MACD momentum and Bollinger Bands mean reversion
-- **Persistent State** — SQLite-backed budget tracking survives restarts
-- **Telegram Bot** — Real-time trade notifications, status commands, kill switch
+- **Market Selection** — Automatic pair filtering by volume, spread, and blacklist
+- **Reconciliation** — Auto-fix stale trades, verify SL/TP barriers still exist, handle partial fills
+- **Persistent State** — SQLite-backed budget tracking, trade analytics, command audit trail
+- **Telegram Bot** — Inline keyboard UI, `/why` explainability, `/signal` indicators, `/stats` performance, `/close` per-position, alert severity with quiet hours
 
 ## Quick Start
 
@@ -159,40 +163,43 @@ backends with their own trade-offs.
 ```
 src/nct/
   config.py            # Pydantic config (TOML + .env)
-  exceptions.py        # Exception hierarchy
-  runtime_mode.py      # PAPER/DEMO/LIVE mode detection (#39)
-  db.py                # SQLite persistence
+  diagnostics.py       # DiagnosticEngine — trade explainability (/why, /signal)
+  db.py                # SQLite: trades, budget, analytics, commands
+  executor.py          # Order execution: triple barrier, trailing, breakeven, partial TP
   main.py              # Entry point / orchestrator
+  notifier.py          # Telegram bot: inline UI, commands, alerts
   exchange/
-    base.py            # IExchange ABC
-    factory.py         # create_exchange_client() — picks backend from config
+    base.py            # IExchange ABC + get_algo_order_status
     coinbase_client.py # Coinbase Advanced Trade (primary)
     client.py          # OKXClient (python-okx)
     bybit_client.py    # BybitClient (pybit V5)
-    market_feed.py     # OKX WebSocket real-time data
     models.py          # Typed data models (Ticker, Candle, Order, Position)
   strategy/
     base.py            # IStrategy ABC
-    factory.py         # create_strategy() + _STRATEGY_REGISTRY (#37)
     momentum.py        # RSI + MACD strategy
     mean_reversion.py  # Bollinger Bands + volume strategy
-    data_provider.py   # OHLCV fetching, caching, DataFrame conversion
+    data_provider.py   # OHLCV fetching, caching
+    market_selector.py # Volume/spread/blacklist pair filter
   risk/
-    budget_manager.py  # Weekly/monthly budget tracking
-    position_sizer.py  # Per-trade sizing
-    risk_manager.py    # Central risk gate
-    protections.py     # Circuit breakers (StoplossGuard, MaxDrawdown)
+    budget_manager.py  # Budget tracking + daily notional cap
+    risk_manager.py    # Central risk gate + correlation limits
+    protections.py     # StoplossGuard, MaxDrawdown, CooldownPeriod, VolatilityCircuitBreaker
   portfolio/
-    tracker.py         # Position tracking, P&L
-  executor.py          # Order execution with atomic triple barrier (#36)
-  notifier.py          # Telegram bot (optional)
-  logging_setup.py     # Structured logging config
+    tracker.py         # Position tracking, P&L, reconciliation
+  telegram/
+    severity.py        # AlertSeverity enum, quiet hours
+    keyboards.py       # Inline keyboard builders
+scripts/
+  backtest.py          # Backtest runner (fees, slippage, regime, per-pair)
+  walk_forward.py      # Walk-forward validation
+  param_stability.py   # Parameter grid search
+  lookahead_check.py   # Lookahead bias detection
 ```
 
 ## Development
 
 ```bash
-# Run tests
+# Run tests (434 tests)
 pytest tests/ -v
 
 # Run linter
@@ -201,15 +208,18 @@ ruff check src/ tests/
 # Run the bot (demo mode)
 nct
 
-# Run backtester (fee-aware — defaults to Coinbase 0.4% per side)
+# Backtesting
 python scripts/backtest.py --pair BTC-USDT --timeframe 15m --limit 300
+python scripts/backtest.py --pairs BTC-USDT ETH-USDT SOL-USDT --regime  # multi-pair + regime
+python scripts/backtest.py --exchange okx                                 # 0.1% fees
 
-# Override fees for a different exchange
-python scripts/backtest.py --pair BTC-USDT --exchange okx       # 0.1% per side
-python scripts/backtest.py --pair BTC-USDT --fee-pct 0.05       # custom rate
+# Research tools
+python scripts/walk_forward.py --pair BTC-USDT --windows 5 --train-pct 70
+python scripts/param_stability.py --param1 stop_loss_pct:1:5:0.5 --param2 take_profit_pct:3:8:1
+python scripts/lookahead_check.py --strategy momentum
 
 # Deploy with Docker
-docker compose up -d
+docker compose build --no-cache && docker compose up -d
 ```
 
 ## Safety
@@ -233,14 +243,15 @@ See issue tracker for detailed deployment docs (#20).
 
 ## Roadmap
 
-See [GitHub Issues](https://github.com/kenshi08/neet-crypto-trader/issues) for the full roadmap, organized by phase:
+All 12 phases are complete. See [GitHub Issues](https://github.com/kenshi08/neet-crypto-trader/issues) for details.
 
-- **Phase 1** — Foundation (config, OKX client, data models) — **Done**
-- **Phase 2** — Risk Engine (budget manager, position sizer, protections)
-- **Phase 3** — Strategy Engine (IStrategy ABC, momentum strategy)
-- **Phase 4** — Execution (order executor, portfolio tracker, WebSocket feed)
-- **Phase 5** — Main Loop (orchestrator, graceful shutdown, structured logging)
-- **Phase 6** — Hardening (backtesting, Telegram bot, Docker, second strategy, LLM layer) — **Done**
+- **Phase 1-6** — Foundation, risk engine, strategies, execution, main loop, hardening
+- **Phase 7** — Operator Intelligence: `/why`, `/signal`, `/close`, inline keyboard UI, alert severity (#44-#48, #68)
+- **Phase 8** — Reconciliation & Resilience: auto-fix stale trades, verify barriers, partial fills, audit trail (#49-#52)
+- **Phase 9** — Post-Trade Analytics: `trade_analytics` table, latency measurement, `/stats` command (#53-#55)
+- **Phase 10** — Market Selection: volume/spread filters, correlation limits, notional cap, volatility breaker (#56-#59)
+- **Phase 11** — Research Pipeline: walk-forward, parameter stability, regime breakdown, lookahead checker (#60-#64)
+- **Phase 12** — Trailing & Staged Exits: trailing stop, breakeven move, partial profit taking (#65-#67)
 
 ## License
 
