@@ -122,6 +122,20 @@ def emergency_keyboard() -> InlineKeyboardMarkup:
 
 
 # ---------------------------------------------------------------------------
+# Signals overview
+# ---------------------------------------------------------------------------
+
+def signals_keyboard(pairs: list[str]) -> InlineKeyboardMarkup:
+    """One button per pair for signal drill-down + back."""
+    rows = [
+        [InlineKeyboardButton(pair, callback_data=f'signal:{pair}')]
+        for pair in pairs
+    ]
+    rows.append([InlineKeyboardButton('\u2190 Back', callback_data='nav:home')])
+    return InlineKeyboardMarkup(rows)
+
+
+# ---------------------------------------------------------------------------
 # Alert action buttons (attached to notifications)
 # ---------------------------------------------------------------------------
 

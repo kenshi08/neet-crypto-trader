@@ -34,6 +34,7 @@ from nct.telegram.keyboards import (
     parse_callback,
     position_detail_keyboard,
     positions_keyboard,
+    signals_keyboard,
 )
 
 
@@ -401,14 +402,12 @@ class TelegramNotifier:
             await self._log_command(update, 'why', pair, result='error')
 
     async def _cmd_signal(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Show current indicator values for a pair."""
+        """Show current indicator values for a pair, or all pairs summary."""
         if not self._agent or str(update.effective_chat.id) != self._chat_id:
             return
 
         if not context.args:
-            await update.message.reply_text(
-                'Usage: `/signal BTC-USD`', parse_mode='Markdown',
-            )
+            await self._cmd_signal_all(update)
             return
 
         pair = context.args[0].upper()
@@ -455,6 +454,30 @@ class TelegramNotifier:
         except Exception as e:
             await update.message.reply_text(f'Error: {str(e)[:200]}')
             await self._log_command(update, 'signal', pair, result='error')
+
+    async def _cmd_signal_all(self, update: Update) -> None:
+        """Show signal summary for all configured pairs."""
+        pairs = self._agent._config.trading.pairs
+        tf = self._agent._config.trading.timeframe
+        lines = [f'*Signals ({tf})*\n']
+
+        for pair in pairs:
+            try:
+                price, balance = await self._get_price_and_balance(pair)
+                report = await self._agent._diagnostics.diagnose(
+                    pair, tf, current_price=price, available_balance=balance,
+                )
+                sig = report.signal.value.upper()
+                conf = f'{report.confidence:.2f}'
+                lines.append(f'`{pair}`: {sig} ({conf})')
+            except Exception:
+                lines.append(f'`{pair}`: _error_')
+
+        await update.message.reply_text(
+            '\n'.join(lines), parse_mode='Markdown',
+            reply_markup=signals_keyboard(pairs),
+        )
+        await self._log_command(update, 'signal', 'all')
 
     async def _cmd_close(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Close a single open position by pair name."""
