@@ -5,6 +5,7 @@ from __future__ import annotations
 import structlog
 
 from nct.strategy.base import IStrategy
+from nct.strategy.composite import CompositeStrategy
 from nct.strategy.mean_reversion import MeanReversionStrategy
 from nct.strategy.momentum import MomentumStrategy
 from nct.strategy.pairs_kalman import PairsKalmanStrategy
@@ -22,6 +23,7 @@ _STRATEGY_REGISTRY: dict[str, type[IStrategy]] = {
     'trend_following': TrendFollowingStrategy,
     'volatility_breakout': VolatilityBreakoutStrategy,
     'pairs_kalman': PairsKalmanStrategy,
+    'composite': CompositeStrategy,
 }
 
 

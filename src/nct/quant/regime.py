@@ -156,7 +156,7 @@ class HMMRegimeDetector:
 
         model = GaussianHMM(
             n_components=self._n_states,
-            covariance_type='full',
+            covariance_type='diag',
             n_iter=self._n_iter,
             random_state=self._rng,
         )
