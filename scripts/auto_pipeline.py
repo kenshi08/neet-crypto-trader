@@ -48,7 +48,7 @@ async def run_pipeline(args: argparse.Namespace) -> dict:
     timestamp = datetime.now(UTC).isoformat()
     model_dir = Path(args.model_dir)
     model_dir.mkdir(parents=True, exist_ok=True)
-    current_model_path = model_dir / 'meta_model.json'
+    current_model_path = model_dir / 'meta_model.pkl'
 
     print(f'=== Pipeline Run {run_id} @ {timestamp} ===')
     print()
@@ -128,7 +128,7 @@ async def run_pipeline(args: argparse.Namespace) -> dict:
 
         # Save with version
         version = datetime.now(UTC).strftime('%Y%m%d_%H%M')
-        versioned_path = model_dir / f'meta_model_v{version}.json'
+        versioned_path = model_dir / f'meta_model_v{version}.pkl'
         final_model.save(versioned_path)
 
         # Also save as current

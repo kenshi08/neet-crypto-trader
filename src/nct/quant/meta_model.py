@@ -415,31 +415,35 @@ class QuantMetaModel:
     # ------------------------------------------------------------------
 
     def save(self, path: str | Path) -> None:
-        """Save trained model to JSON file."""
+        """Save trained model via pickle (XGBoost 3.x compatible)."""
+        import pickle
+
         if self._model is None:
             raise ValueError('No trained model to save')
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
-        self._model.save_model(str(p))
+        with open(p, 'wb') as f:
+            pickle.dump(self._model, f)
         # Save metadata alongside
         meta_path = p.with_suffix('.meta.json')
         meta_path.write_text(json.dumps({
             'feature_names': self._feature_names,
             'n_features': len(self._feature_names),
-            'params': {k: v for k, v in self._params.items() if k != 'use_label_encoder'},
+            'params': self._params,
             'no_trade_threshold': self._no_trade_thresh,
             'full_size_threshold': self._full_size_thresh,
         }, indent=2))
         log.info('meta_model_saved', path=str(p))
 
     def load(self, path: str | Path) -> None:
-        """Load a previously trained model from JSON file."""
+        """Load a previously trained model via pickle."""
+        import pickle
+
         p = Path(path)
         if not p.exists():
             raise FileNotFoundError(f'Model file not found: {p}')
-        model = xgb.XGBClassifier()
-        model.load_model(str(p))
-        self._model = model
+        with open(p, 'rb') as f:
+            self._model = pickle.load(f)  # noqa: S301
         log.info('meta_model_loaded', path=str(p))
 
 

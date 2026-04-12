@@ -78,7 +78,7 @@ class CompositeStrategy(IStrategy):
             full_size_threshold=full_size_threshold,
         )
         from pathlib import Path
-        model_path = Path('data/models/meta_model.json')
+        model_path = Path('data/models/meta_model.pkl')
         if model_path.exists():
             try:
                 self._meta.load(str(model_path))

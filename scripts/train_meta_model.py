@@ -36,7 +36,7 @@ def main() -> None:
     parser.add_argument('--pair', default='BTC-USDT', help='Primary pair for training')
     parser.add_argument('--timeframe', default='15m', help='Candle timeframe')
     parser.add_argument('--limit', type=int, default=5000, help='Number of candles')
-    parser.add_argument('--output', default='data/models/meta_model.json', help='Output path')
+    parser.add_argument('--output', default='data/models/meta_model.pkl', help='Output path')
     parser.add_argument('--horizon', type=int, default=4, help='Forward return horizon (candles)')
     parser.add_argument('--fee-threshold', type=float, default=0.3, help='Min return % for label')
     parser.add_argument('--walk-forward-splits', type=int, default=5, help='WF validation splits')
