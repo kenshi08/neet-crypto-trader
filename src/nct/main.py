@@ -166,6 +166,7 @@ class TradingAgent:
             portfolio=self._portfolio,
             budget_manager=self._budget_manager,
             protection_manager=self._protection_manager,
+            db=self._db,
         )
 
         # 10. Strategy — selected via config.trading.strategy, params from TOML

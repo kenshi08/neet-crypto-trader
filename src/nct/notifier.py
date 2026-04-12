@@ -101,6 +101,7 @@ class TelegramNotifier:
         self._app.add_handler(CommandHandler('balance', self._cmd_balance))
         self._app.add_handler(CommandHandler('why', self._cmd_why))
         self._app.add_handler(CommandHandler('signal', self._cmd_signal))
+        self._app.add_handler(CommandHandler('stats', self._cmd_stats))
         self._app.add_handler(CommandHandler('close', self._cmd_close))
         self._app.add_handler(CommandHandler('start', self._cmd_start))
         self._app.add_handler(CallbackQueryHandler(self._handle_callback))
@@ -458,6 +459,76 @@ class TelegramNotifier:
         except Exception as e:
             await update.message.reply_text(f'Failed to close {pair}: {str(e)[:200]}')
             await self._log_command(update, 'close', pair, result='error')
+
+    async def _cmd_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Show aggregate trading performance stats."""
+        if not self._agent or str(update.effective_chat.id) != self._chat_id:
+            return
+
+        # Parse optional period: /stats 7d, /stats 30d, /stats all
+        days = None
+        if context.args:
+            arg = context.args[0].lower()
+            if arg.endswith('d') and arg[:-1].isdigit():
+                days = int(arg[:-1])
+            elif arg != 'all':
+                days = 30  # default
+
+        try:
+            db = self._agent._db
+            summary = await db.get_trade_analytics_summary(days=days)
+            by_pair = await db.get_trade_analytics_by_pair(days=days)
+            by_exit = await db.get_trade_analytics_by_exit_reason(days=days)
+
+            total = summary.get('total_trades', 0) or 0
+            if total == 0:
+                await update.message.reply_text('No trade analytics data yet.')
+                await self._log_command(update, 'stats', str(days or 'all'))
+                return
+
+            wins = summary.get('wins', 0) or 0
+            losses = summary.get('losses', 0) or 0
+            win_rate = (wins / total * 100) if total else 0
+            total_pnl = summary.get('total_pnl', 0) or 0
+            avg_slip = summary.get('avg_slippage', 0) or 0
+            avg_lat = summary.get('avg_entry_latency_ms', 0) or 0
+            total_fees = summary.get('total_fees', 0) or 0
+
+            period = f'Last {days}d' if days else 'All time'
+            lines = [
+                f'*Stats ({period})*',
+                f'Trades: `{total}` (W: `{wins}` / L: `{losses}`)',
+                f'Win rate: `{win_rate:.1f}%`',
+                f'Total P&L: `{total_pnl:+.4f}`',
+                f'Total fees: `{total_fees:.4f}`',
+                f'Avg slippage: `{avg_slip:.3f}%`',
+                f'Avg entry latency: `{avg_lat:.0f}ms`',
+            ]
+
+            if by_pair:
+                lines.append('\n*By Pair:*')
+                for row in by_pair[:5]:
+                    pair_pnl = row.get('pnl', 0) or 0
+                    pair_trades = row.get('trades', 0) or 0
+                    pair_wins = row.get('wins', 0) or 0
+                    lines.append(
+                        f'`{row["inst_id"]}`: `{pair_pnl:+.4f}` '
+                        f'({pair_wins}/{pair_trades})'
+                    )
+
+            if by_exit:
+                lines.append('\n*By Exit:*')
+                for row in by_exit[:5]:
+                    reason = row.get('exit_reason') or 'open'
+                    exit_pnl = row.get('pnl', 0) or 0
+                    exit_trades = row.get('trades', 0) or 0
+                    lines.append(f'`{reason}`: `{exit_pnl:+.4f}` ({exit_trades})')
+
+            await update.message.reply_text('\n'.join(lines), parse_mode='Markdown')
+            await self._log_command(update, 'stats', str(days or 'all'))
+        except Exception as e:
+            await update.message.reply_text(f'Error: {str(e)[:200]}')
+            await self._log_command(update, 'stats', result='error')
 
     # -- Inline keyboard handlers ------------------------------------------
 
