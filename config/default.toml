@@ -89,7 +89,8 @@ atr_tp_multiplier = 2.0
 # Set trading.strategy = "composite" to activate.
 # Falls back to base TA + entropy filter when meta-model is not trained.
 [strategy.composite]
-base_strategy = "momentum"      # Base TA strategy used as feature generator
+# Runs all 4 TA strategies (momentum, mean_reversion, trend_following,
+# volatility_breakout) as feature generators for the XGBoost meta-model.
 pe_threshold = 0.90             # Permutation entropy: block trades above this (market too random)
 pe_window = 50                  # Rolling window for PE computation
 pe_order = 5                    # Embedding dimension (5 = 120 ordinal patterns)
