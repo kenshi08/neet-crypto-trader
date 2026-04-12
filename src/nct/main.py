@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import signal
 import sys
+import time
 from enum import StrEnum
+from pathlib import Path
 
 import structlog
 from dotenv import load_dotenv
@@ -281,8 +283,17 @@ class TradingAgent:
         finally:
             await self.shutdown()
 
+    def _write_heartbeat(self) -> None:
+        """Write heartbeat file for Docker health check."""
+        import contextlib
+
+        with contextlib.suppress(Exception):
+            Path('data/.heartbeat').write_text(str(time.time()))
+
     async def _trading_iteration(self) -> None:
         """Single iteration of the trading loop."""
+        self._write_heartbeat()
+
         # Check for budget period reset
         await self._budget_manager.check_period_reset()
 

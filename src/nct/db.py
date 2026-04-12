@@ -420,6 +420,89 @@ class Database:
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
 
+    # -- Risk-adjusted metrics ---------------------------------------------
+
+    async def get_risk_adjusted_metrics(
+        self, *, days: int | None = None,
+    ) -> dict:
+        """Compute risk-adjusted performance metrics from closed trades.
+
+        Returns dict with: sharpe_ratio, profit_factor, avg_win, avg_loss,
+        expectancy, max_consecutive_losses.
+        """
+        where = 'WHERE t.closed_at IS NOT NULL'
+        params: tuple = ()
+        if days is not None:
+            where += " AND t.closed_at >= datetime('now', ?)"
+            params = (f'-{days} days',)
+
+        cursor = await self.conn.execute(
+            f"""SELECT CAST(t.pnl AS REAL) as pnl
+            FROM trades t
+            {where}
+            ORDER BY t.closed_at ASC""",
+            params,
+        )
+        rows = await cursor.fetchall()
+
+        pnls = [r['pnl'] for r in rows if r['pnl'] is not None]
+        if not pnls:
+            return {
+                'sharpe_ratio': 0.0,
+                'profit_factor': 0.0,
+                'avg_win': 0.0,
+                'avg_loss': 0.0,
+                'expectancy': 0.0,
+                'max_consecutive_losses': 0,
+                'trade_count': 0,
+            }
+
+        wins = [p for p in pnls if p > 0]
+        losses = [p for p in pnls if p <= 0]
+
+        avg_win = sum(wins) / len(wins) if wins else 0.0
+        avg_loss = sum(losses) / len(losses) if losses else 0.0
+
+        gross_profit = sum(wins)
+        gross_loss = abs(sum(losses))
+        profit_factor = (
+            gross_profit / gross_loss if gross_loss > 0 else float('inf')
+        )
+
+        # Sharpe ratio (annualized, assuming ~365 trading days for crypto)
+        mean_pnl = sum(pnls) / len(pnls)
+        if len(pnls) >= 2:
+            variance = sum((p - mean_pnl) ** 2 for p in pnls) / (len(pnls) - 1)
+            std_pnl = variance ** 0.5
+            sharpe = (mean_pnl / std_pnl * (365 ** 0.5)) if std_pnl > 0 else 0.0
+        else:
+            sharpe = 0.0
+
+        # Expectancy = avg_win * win_rate - avg_loss * loss_rate
+        win_rate = len(wins) / len(pnls) if pnls else 0
+        loss_rate = len(losses) / len(pnls) if pnls else 0
+        expectancy = avg_win * win_rate + avg_loss * loss_rate  # avg_loss is negative
+
+        # Max consecutive losses
+        max_consec = 0
+        current_consec = 0
+        for p in pnls:
+            if p <= 0:
+                current_consec += 1
+                max_consec = max(max_consec, current_consec)
+            else:
+                current_consec = 0
+
+        return {
+            'sharpe_ratio': round(sharpe, 2),
+            'profit_factor': round(profit_factor, 2) if profit_factor != float('inf') else 999.99,
+            'avg_win': round(avg_win, 4),
+            'avg_loss': round(avg_loss, 4),
+            'expectancy': round(expectancy, 4),
+            'max_consecutive_losses': max_consec,
+            'trade_count': len(pnls),
+        }
+
     # -- Telegram command log ---------------------------------------------
 
     async def log_telegram_command(
