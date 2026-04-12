@@ -1,6 +1,6 @@
 [trading]
 pairs = ["BTC-USDT", "ETH-USDT", "SOL-USDT"]
-strategy = "momentum"
+strategy = "composite"          # "composite" = full quant stack, "momentum"/"mean_reversion" etc. = single TA
 timeframe = "15m"
 max_open_positions = 3
 poll_interval_seconds = 10
@@ -24,6 +24,7 @@ trailing_stop_activation_pct = 2.0  # Activate trailing after +2% unrealized
 trailing_stop_delta_pct = 1.0       # Trail 1% behind high-water mark
 breakeven_trigger_pct = 0           # Move SL to breakeven at +N%, 0 = disabled
 min_signal_confidence = 0.6     # Minimum strategy confidence to enter a trade
+exchange_fee_pct = 0.1          # Per-side fee: 0.4 Coinbase, 0.1 OKX/Bybit, 0.045 Hyperliquid
 
 # Partial profit taking — close fractions at intermediate targets
 # [[risk.partial_tp]]
@@ -98,7 +99,7 @@ bocpd_hazard_rate = 0.004       # BOCPD: expected changepoint frequency (~1/250 
 # Meta-model loads from data/models/meta_model.json (written by auto_pipeline.py)
 no_trade_threshold = 0.55       # Meta-model P(profitable) below this = no trade
 full_size_threshold = 0.70      # Meta-model P(profitable) above this = full position
-llm_enabled = true              # LLM anomaly guard: blocks trades during regime conflicts
+llm_enabled = true              # LLM consultative signal: adjusts confidence during regime conflicts
 llm_model = "claude-haiku-4-5-20251001"  # Fast + cheap (~$0.001/call)
 llm_max_calls_per_hour = 30     # Rate limit for LLM API calls
 

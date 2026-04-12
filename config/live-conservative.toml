@@ -6,7 +6,7 @@
 
 [trading]
 pairs = ["BTC-USDT", "ETH-USDT", "SOL-USDT"]
-strategy = "momentum"
+strategy = "composite"
 timeframe = "15m"
 max_open_positions = 2              # Conservative: max 2 simultaneous
 poll_interval_seconds = 15
