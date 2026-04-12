@@ -176,6 +176,49 @@ class BybitClient(IExchange):
         return self._demo_mode
 
     @retrier
+    async def get_order_detail(
+        self, inst_id: str, order_id: str,
+    ) -> OrderResponse:
+        """Re-query a Bybit order to get fill details."""
+        self._ensure_sdk()
+        symbol = _to_bybit_symbol(inst_id)
+        async with self._trade_limiter:
+            result = await self._run_sync(
+                self._session.get_order_history,
+                category=self._category,
+                symbol=symbol,
+                orderId=order_id,
+            )
+        data = self._check_response(result, context=f'get_order_detail({order_id})')
+        orders = data.get('list', []) if isinstance(data, dict) else []
+        if orders:
+            o = orders[0]
+            status_map = {
+                'New': OrderStatus.PENDING,
+                'PartiallyFilled': OrderStatus.PARTIALLY_FILLED,
+                'Filled': OrderStatus.FILLED,
+                'Cancelled': OrderStatus.CANCELLED,
+                'Rejected': OrderStatus.FAILED,
+            }
+            avg_price = o.get('avgPrice', '0')
+            return OrderResponse(
+                order_id=order_id,
+                client_order_id=o.get('orderLinkId', ''),
+                status=status_map.get(o.get('orderStatus', ''), OrderStatus.PENDING),
+                inst_id=inst_id,
+                side=Side(o.get('side', 'Buy').lower()),
+                size=Decimal(o.get('qty', '0')),
+                price=Decimal(o['price']) if o.get('price') and o['price'] != '0' else None,
+                filled_size=Decimal(o.get('cumExecQty', '0')),
+                avg_fill_price=Decimal(avg_price) if avg_price and avg_price != '0' else None,
+                fee=Decimal(o.get('cumExecFee', '0')),
+            )
+        return OrderResponse(
+            order_id=order_id, client_order_id='', status=OrderStatus.PENDING,
+            inst_id=inst_id, side=Side.BUY, size=Decimal(0), price=None,
+        )
+
+    @retrier
     async def get_algo_order_status(
         self, inst_id: str, algo_order_id: str,
     ) -> OrderStatus:

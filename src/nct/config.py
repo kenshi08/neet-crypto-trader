@@ -223,6 +223,46 @@ class AppConfig(BaseModel):
     strategy_params: dict = Field(default_factory=dict)
 
 
+def validate_live_config(config: AppConfig) -> list[str]:
+    """Validate that live-mode config has essential protections enabled.
+
+    Returns a list of error messages. Empty list = all checks pass.
+    Only called when RunningMode is LIVE_REAL_MONEY.
+    """
+    errors: list[str] = []
+    risk = config.risk
+    ms = config.market_selection
+    trading = config.trading
+
+    if risk.stop_loss_pct <= 0:
+        errors.append('stop_loss_pct must be > 0 in live mode')
+    if risk.take_profit_pct <= 0:
+        errors.append('take_profit_pct must be > 0 in live mode')
+    if risk.min_signal_confidence < 0.5:
+        errors.append(
+            f'min_signal_confidence={risk.min_signal_confidence} is too low for live '
+            f'(minimum 0.5 required)'
+        )
+    if config.budget.daily_loss_limit_usdt <= 0:
+        errors.append('daily_loss_limit_usdt must be > 0 in live mode')
+    if risk.volatility_circuit_breaker_multiplier <= 0:
+        errors.append(
+            'volatility_circuit_breaker_multiplier must be > 0 in live mode '
+            '(circuit breaker is required)'
+        )
+    if len(trading.pairs) >= 3 and not risk.correlation_groups:
+        errors.append(
+            f'correlation_groups must be configured when trading {len(trading.pairs)} '
+            f'pairs in live mode'
+        )
+    if ms.min_volume_usdt <= 0 and ms.max_spread_pct <= 0:
+        errors.append(
+            'at least one market quality filter must be active in live mode '
+            '(min_volume_usdt > 0 or max_spread_pct > 0)'
+        )
+    return errors
+
+
 def load_config(config_path: Path | None = None) -> AppConfig:
     """Load configuration from TOML file + environment variables.
 

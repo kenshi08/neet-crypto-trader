@@ -686,6 +686,52 @@ class CoinbaseClient(IExchange):
         return response
 
     @retrier
+    async def get_order_detail(
+        self, inst_id: str, order_id: str,
+    ) -> OrderResponse:
+        """Re-query a Coinbase order to get fill details."""
+        if order_id in self._dry_run_orders:
+            return self._dry_run_orders[order_id]
+
+        self._ensure_sdk()
+        async with self._trade_limiter:
+            result = await self._run_sync(
+                self._session.get_order, order_id=order_id,
+            )
+
+        order_data = getattr(result, 'order', result)
+        status_raw = getattr(order_data, 'status', '')
+        status_map = {
+            'OPEN': OrderStatus.PENDING,
+            'PENDING': OrderStatus.PENDING,
+            'FILLED': OrderStatus.FILLED,
+            'CANCELLED': OrderStatus.CANCELLED,
+            'EXPIRED': OrderStatus.CANCELLED,
+            'FAILED': OrderStatus.FAILED,
+        }
+        status = status_map.get(status_raw, OrderStatus.PENDING)
+
+        avg_price_str = getattr(order_data, 'average_filled_price', '0')
+        filled_size_str = getattr(order_data, 'filled_size', '0')
+        total_fees_str = getattr(order_data, 'total_fees', '0')
+
+        return OrderResponse(
+            order_id=order_id,
+            client_order_id=getattr(order_data, 'client_order_id', ''),
+            status=status,
+            inst_id=inst_id,
+            side=Side.BUY,
+            size=Decimal(getattr(order_data, 'base_size', '0') or '0'),
+            price=None,
+            filled_size=Decimal(filled_size_str) if filled_size_str else Decimal(0),
+            avg_fill_price=(
+                Decimal(avg_price_str)
+                if avg_price_str and avg_price_str != '0' else None
+            ),
+            fee=Decimal(total_fees_str) if total_fees_str else Decimal(0),
+        )
+
+    @retrier
     async def get_algo_order_status(
         self, inst_id: str, algo_order_id: str,
     ) -> OrderStatus:

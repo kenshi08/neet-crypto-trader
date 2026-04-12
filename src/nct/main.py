@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import signal
 import sys
 import time
@@ -12,7 +13,7 @@ from pathlib import Path
 import structlog
 from dotenv import load_dotenv
 
-from nct.config import AppConfig, load_config
+from nct.config import AppConfig, load_config, validate_live_config
 from nct.db import Database, get_db_path
 from nct.diagnostics import DiagnosticEngine
 from nct.exceptions import ExchangeError
@@ -36,8 +37,8 @@ from nct.risk.risk_manager import RiskManager
 from nct.runtime_mode import RunningMode, describe, detect_mode
 from nct.strategy.base import IStrategy, Signal
 from nct.strategy.data_provider import DataProvider
-from nct.strategy.market_selector import MarketSelector
 from nct.strategy.factory import create_strategy
+from nct.strategy.market_selector import MarketSelector
 
 log = structlog.get_logger()
 
@@ -105,6 +106,25 @@ class TradingAgent:
             has_api_key=bool(active_creds.api_key),
             warning=mode_desc.log_warning,
         )
+
+        # Validate config safety for live mode (#88)
+        if self._running_mode == RunningMode.LIVE_REAL_MONEY:
+            errors = validate_live_config(self._config)
+            if errors:
+                skip = os.environ.get('NCT_SKIP_LIVE_VALIDATION', '') == '1'
+                for err in errors:
+                    log.critical('live_config_violation', error=err)
+                if skip:
+                    log.critical(
+                        'live_validation_skipped',
+                        reason='NCT_SKIP_LIVE_VALIDATION=1',
+                        violations=len(errors),
+                    )
+                else:
+                    raise SystemExit(
+                        f'Refusing to start in LIVE mode: {len(errors)} config '
+                        f'violation(s). Fix config or set NCT_SKIP_LIVE_VALIDATION=1'
+                    )
 
         log.info(
             'agent_initializing',

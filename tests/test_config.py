@@ -10,10 +10,12 @@ import pytest
 from nct.config import (
     AppConfig,
     BudgetConfig,
+    MarketSelectionConfig,
     OKXCredentials,
     RiskConfig,
     TradingConfig,
     load_config,
+    validate_live_config,
 )
 
 
@@ -161,3 +163,116 @@ class TestAppConfig:
         assert app_config.trading.pairs == ['BTC-USDT', 'ETH-USDT']
         assert app_config.budget.amount_usdt == Decimal('500')
         assert app_config.risk.stop_loss_pct == Decimal('3.0')
+
+
+# ===================================================================
+# Issue #88 — Live-mode config validation
+# ===================================================================
+
+
+def _safe_config(**overrides) -> AppConfig:
+    """Build a config that passes all live validation checks."""
+    risk_kwargs = {
+        'stop_loss_pct': Decimal('3.0'),
+        'take_profit_pct': Decimal('5.0'),
+        'min_signal_confidence': 0.6,
+        'volatility_circuit_breaker_multiplier': 3.0,
+        'correlation_groups': {'btc_beta': ['BTC-USDT', 'ETH-USDT', 'SOL-USDT']},
+    }
+    risk_kwargs.update(overrides.pop('risk', {}))
+    budget_kwargs = {'daily_loss_limit_usdt': Decimal('50')}
+    budget_kwargs.update(overrides.pop('budget', {}))
+    ms_kwargs = {'min_volume_usdt': Decimal('10000')}
+    ms_kwargs.update(overrides.pop('market_selection', {}))
+    trading_kwargs = {'pairs': ['BTC-USDT', 'ETH-USDT', 'SOL-USDT']}
+    trading_kwargs.update(overrides.pop('trading', {}))
+
+    return AppConfig(
+        trading=TradingConfig(**trading_kwargs),
+        budget=BudgetConfig(**budget_kwargs),
+        risk=RiskConfig(**risk_kwargs),
+        market_selection=MarketSelectionConfig(**ms_kwargs),
+        **overrides,
+    )
+
+
+class TestValidateLiveConfig:
+    def test_safe_config_passes(self):
+        config = _safe_config()
+        errors = validate_live_config(config)
+        assert errors == []
+
+    def test_stop_loss_zero_fails(self):
+        config = _safe_config(risk={'stop_loss_pct': Decimal('0')})
+        errors = validate_live_config(config)
+        assert any('stop_loss_pct' in e for e in errors)
+
+    def test_take_profit_zero_fails(self):
+        config = _safe_config(risk={'take_profit_pct': Decimal('0')})
+        errors = validate_live_config(config)
+        assert any('take_profit_pct' in e for e in errors)
+
+    def test_low_confidence_fails(self):
+        config = _safe_config(risk={'min_signal_confidence': 0.2})
+        errors = validate_live_config(config)
+        assert any('min_signal_confidence' in e for e in errors)
+
+    def test_confidence_at_threshold_passes(self):
+        config = _safe_config(risk={'min_signal_confidence': 0.5})
+        errors = validate_live_config(config)
+        assert not any('min_signal_confidence' in e for e in errors)
+
+    def test_daily_loss_limit_zero_fails(self):
+        config = _safe_config(budget={'daily_loss_limit_usdt': Decimal('0')})
+        errors = validate_live_config(config)
+        assert any('daily_loss_limit' in e for e in errors)
+
+    def test_circuit_breaker_disabled_fails(self):
+        config = _safe_config(risk={'volatility_circuit_breaker_multiplier': 0.0})
+        errors = validate_live_config(config)
+        assert any('circuit_breaker' in e.lower() or 'volatility' in e.lower() for e in errors)
+
+    def test_no_correlation_groups_with_many_pairs_fails(self):
+        config = _safe_config(
+            trading={'pairs': ['BTC-USDT', 'ETH-USDT', 'SOL-USDT']},
+            risk={'correlation_groups': {}},
+        )
+        errors = validate_live_config(config)
+        assert any('correlation' in e.lower() for e in errors)
+
+    def test_few_pairs_skip_correlation_check(self):
+        config = _safe_config(
+            trading={'pairs': ['BTC-USDT', 'ETH-USDT']},
+            risk={'correlation_groups': {}},
+        )
+        errors = validate_live_config(config)
+        assert not any('correlation' in e.lower() for e in errors)
+
+    def test_no_market_quality_filters_fails(self):
+        config = _safe_config(
+            market_selection={'min_volume_usdt': Decimal('0'), 'max_spread_pct': Decimal('0')},
+        )
+        errors = validate_live_config(config)
+        assert any('market quality' in e.lower() for e in errors)
+
+    def test_spread_filter_alone_passes(self):
+        config = _safe_config(
+            market_selection={'min_volume_usdt': Decimal('0'), 'max_spread_pct': Decimal('1.0')},
+        )
+        errors = validate_live_config(config)
+        assert not any('market quality' in e.lower() for e in errors)
+
+    def test_multiple_violations_returns_all(self):
+        config = _safe_config(
+            risk={
+                'stop_loss_pct': Decimal('0'),
+                'take_profit_pct': Decimal('0'),
+                'min_signal_confidence': 0.1,
+                'volatility_circuit_breaker_multiplier': 0.0,
+                'correlation_groups': {},
+            },
+            budget={'daily_loss_limit_usdt': Decimal('0')},
+            market_selection={'min_volume_usdt': Decimal('0'), 'max_spread_pct': Decimal('0')},
+        )
+        errors = validate_live_config(config)
+        assert len(errors) >= 6

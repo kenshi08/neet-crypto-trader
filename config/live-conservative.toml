@@ -1,0 +1,99 @@
+# Live-conservative config — safe defaults for real money deployment.
+# All protections enabled, conservative limits. Passes live-mode validation.
+#
+# Start with this profile and adjust gradually based on performance data.
+# Use NCT_CONFIG=config/live-conservative.toml in .env.
+
+[trading]
+pairs = ["BTC-USDT", "ETH-USDT", "SOL-USDT"]
+strategy = "momentum"
+timeframe = "15m"
+max_open_positions = 2              # Conservative: max 2 simultaneous
+poll_interval_seconds = 15
+reconciliation_interval = 5         # Check barriers every 5 iterations (~75s)
+
+[budget]
+period = "weekly"
+amount_usdt = 100                   # Start small — scale up after validation
+max_loss_pct = 3.0                  # Stop trading at -3% ($3 loss on $100)
+max_gain_pct = 10.0                 # Take profits at +10%
+max_position_pct = 25.0             # Max $25 per trade
+daily_loss_limit_usdt = 15          # Hard daily loss cap
+daily_notional_cap_usdt = 300       # Max $300 notional per day
+
+[risk]
+stop_loss_pct = 2.5                 # 2.5% SL — moderate
+take_profit_pct = 4.0               # 4.0% TP — 1.6:1 reward/risk
+time_limit_seconds = 3600           # 1-hour time limit
+
+# Trailing stop — protects profits
+trailing_stop = true
+trailing_stop_activation_pct = 2.0  # Activate after +2%
+trailing_stop_delta_pct = 0.8       # Trail 0.8% behind high
+
+# Breakeven — eliminates downside once profitable
+breakeven_trigger_pct = 1.5         # Move SL to entry at +1.5%
+
+min_signal_confidence = 0.6         # Require moderate confidence
+
+# Correlation limits — prevent concentration
+max_correlated_positions = 1        # Max 1 per group (conservative)
+
+# Volatility circuit breaker — halt in extreme conditions
+volatility_circuit_breaker_multiplier = 2.5
+volatility_lookback_candles = 20
+volatility_reference_pair = "BTC-USDT"
+
+# Correlation groups — MUST come after plain [risk] keys
+[risk.correlation_groups]
+btc_ecosystem = ["BTC-USDT", "ETH-USDT", "SOL-USDT"]
+
+# Partial profit taking — MUST come after [risk.correlation_groups]
+[[risk.partial_tp]]
+pct = 2.5                           # Close 40% at +2.5%
+close_fraction = 0.4
+
+[market_selection]
+min_volume_usdt = 100000            # Require $100k 24h volume
+max_spread_pct = 0.5                # Skip if spread > 0.5%
+blacklist = []
+
+[telegram]
+min_severity = "low"                # See everything initially
+quiet_hours_start = 23
+quiet_hours_end = 7
+quiet_hours_timezone = "Asia/Singapore"
+quiet_hours_min_severity = "high"
+
+[strategy.momentum]
+rsi_period = 14
+rsi_oversold = 30.0
+rsi_overbought = 70.0
+macd_fast = 12
+macd_slow = 26
+macd_signal = 9
+
+[strategy.mean_reversion]
+bb_period = 20
+bb_std = 2.0
+volume_ma_period = 20
+volume_multiplier = 1.3
+atr_period = 14
+atr_sl_multiplier = 1.5
+atr_tp_multiplier = 2.0
+
+[strategy.trend_following]
+ema_fast = 9
+ema_slow = 21
+adx_period = 14
+adx_threshold = 25.0
+atr_period = 14
+atr_sl_multiplier = 2.0
+atr_tp_multiplier = 3.0
+
+[strategy.volatility_breakout]
+lookback_period = 20
+atr_period = 14
+breakout_atr_multiplier = 0.5
+atr_sl_multiplier = 1.0
+atr_tp_multiplier = 2.0

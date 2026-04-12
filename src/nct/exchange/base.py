@@ -97,6 +97,15 @@ class IExchange(ABC):
         """
 
     @abstractmethod
+    async def get_order_detail(
+        self, inst_id: str, order_id: str,
+    ) -> OrderResponse:
+        """Re-query an order to get fill details (price, size, status).
+
+        Used when the initial place_order response is missing avg_fill_price.
+        """
+
+    @abstractmethod
     async def place_stop_loss(
         self,
         inst_id: str,
