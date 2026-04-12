@@ -10,6 +10,7 @@ from nct.exchange.models import (
     Candle,
     OrderRequest,
     OrderResponse,
+    OrderStatus,
     Position,
     Side,
     Ticker,
@@ -85,6 +86,15 @@ class IExchange(ABC):
     # ===================================================================
     # Algo orders (server-side stop-loss / take-profit)
     # ===================================================================
+
+    @abstractmethod
+    async def get_algo_order_status(
+        self, inst_id: str, algo_order_id: str,
+    ) -> OrderStatus:
+        """Check if an algo order (SL/TP) is still active on the exchange.
+
+        Returns PENDING if still active, FILLED/CANCELLED if terminal.
+        """
 
     @abstractmethod
     async def place_stop_loss(

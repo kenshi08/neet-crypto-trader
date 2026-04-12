@@ -7,7 +7,7 @@ from decimal import Decimal
 import structlog
 
 from nct.exchange.base import IExchange
-from nct.exchange.models import OrderRequest, OrderType, Side, TdMode
+from nct.exchange.models import OrderRequest, OrderStatus, OrderType, Side, TdMode
 from nct.portfolio.tracker import PortfolioTracker, TrackedTrade
 from nct.risk.budget_manager import BudgetManager
 from nct.risk.protections import ProtectionManager
@@ -75,23 +75,43 @@ class OrderExecutor:
             log.exception('order_placement_failed', inst_id=inst_id)
             return None
 
-        # Use fill price if available, otherwise estimate from decision
+        # Determine actual fill size and price (handles partial fills)
+        actual_size = order_resp.filled_size if order_resp.filled_size > 0 else decision.size
         entry_price = order_resp.avg_fill_price or decision.stop_loss_price
         if entry_price is None or entry_price == 0:
-            # Fallback: derive from SL/TP prices
             entry_price = (
                 decision.stop_loss_price
                 + (decision.take_profit_price - decision.stop_loss_price) / 2
             )
         fee = order_resp.fee if order_resp.fee else Decimal(0)
 
+        # Handle zero fill (order rejected or fully unfilled)
+        if order_resp.filled_size == Decimal(0) and not order_resp.is_dry_run:
+            log.warning('zero_fill', inst_id=inst_id, requested=str(decision.size))
+            return None
+
+        # Log partial fills
+        if (
+            order_resp.filled_size > 0
+            and order_resp.filled_size < decision.size
+            and not order_resp.is_dry_run
+        ):
+            log.warning(
+                'partial_fill',
+                inst_id=inst_id,
+                requested=str(decision.size),
+                filled=str(order_resp.filled_size),
+                shortfall=str(decision.size - order_resp.filled_size),
+            )
+
         # Place server-side stop-loss (CRITICAL — safety invariant)
         # If this fails, we MUST reverse the entry. No unprotected positions.
+        # Use actual_size (not decision.size) to match the filled quantity.
         try:
             sl_algo_id = await self._client.place_stop_loss(
                 inst_id=inst_id,
                 side=close_side,
-                size=decision.size,
+                size=actual_size,
                 trigger_price=decision.stop_loss_price,
             )
         except Exception:
@@ -103,7 +123,7 @@ class OrderExecutor:
             await self._reverse_entry(
                 inst_id=inst_id,
                 close_side=close_side,
-                size=decision.size,
+                size=actual_size,
             )
             return None
 
@@ -113,7 +133,7 @@ class OrderExecutor:
             tp_algo_id = await self._client.place_take_profit(
                 inst_id=inst_id,
                 side=close_side,
-                size=decision.size,
+                size=actual_size,
                 trigger_price=decision.take_profit_price,
             )
         except Exception:
@@ -122,7 +142,6 @@ class OrderExecutor:
                 inst_id=inst_id,
                 msg='Take-profit placement failed — reversing entry and cancelling stop-loss',
             )
-            # Cancel the stop-loss we just placed
             try:
                 await self._client.cancel_order(inst_id, sl_algo_id)
             except Exception:
@@ -130,15 +149,15 @@ class OrderExecutor:
             await self._reverse_entry(
                 inst_id=inst_id,
                 close_side=close_side,
-                size=decision.size,
+                size=actual_size,
             )
             return None
 
-        # Track in portfolio
+        # Track in portfolio (use actual_size and entry_price from fill)
         trade = await self._portfolio.open_trade(
             inst_id=inst_id,
             side=side.value,
-            size=decision.size,
+            size=actual_size,
             entry_price=entry_price,
             fee=abs(fee),
             strategy=strategy_name,
@@ -150,7 +169,7 @@ class OrderExecutor:
         )
 
         # Record in budget
-        cost = decision.size * entry_price
+        cost = actual_size * entry_price
         await self._budget.record_trade_open(cost)
 
         log.info(
@@ -267,3 +286,109 @@ class OrderExecutor:
                 log.warning('cannot_close_expired_no_price', inst_id=inst_id)
 
         return closed
+
+    async def verify_barriers(self) -> list[str]:
+        """Verify SL/TP algo orders are still active for all open trades.
+
+        If a barrier is missing, attempts to re-place it. If re-placement
+        fails, closes the position (safety invariant #1).
+
+        Returns list of inst_ids where barriers were re-placed or positions closed.
+        """
+        affected: list[str] = []
+        for inst_id, trade in list(self._portfolio.open_trades.items()):
+            try:
+                await self._verify_single_barrier(trade)
+            except Exception:
+                log.exception('barrier_verification_failed', inst_id=inst_id)
+                affected.append(inst_id)
+        return affected
+
+    async def _verify_single_barrier(self, trade: TrackedTrade) -> None:
+        """Check and repair barriers for a single trade."""
+        close_side = Side.SELL if trade.side == 'buy' else Side.BUY
+
+        # Check stop-loss
+        if trade.stop_loss_algo_id:
+            sl_status = await self._client.get_algo_order_status(
+                trade.inst_id, trade.stop_loss_algo_id,
+            )
+            if sl_status != OrderStatus.PENDING:
+                log.warning(
+                    'barrier_missing_sl',
+                    inst_id=trade.inst_id,
+                    algo_id=trade.stop_loss_algo_id,
+                    status=sl_status.value,
+                )
+                await self._repair_stop_loss(trade, close_side)
+
+        # Check take-profit
+        if trade.take_profit_algo_id:
+            tp_status = await self._client.get_algo_order_status(
+                trade.inst_id, trade.take_profit_algo_id,
+            )
+            if tp_status != OrderStatus.PENDING:
+                log.warning(
+                    'barrier_missing_tp',
+                    inst_id=trade.inst_id,
+                    algo_id=trade.take_profit_algo_id,
+                    status=tp_status.value,
+                )
+                await self._repair_take_profit(trade, close_side)
+
+    async def _repair_stop_loss(self, trade: TrackedTrade, close_side: Side) -> None:
+        """Re-place a missing stop-loss. Close position if re-placement fails."""
+        if not trade.stop_loss_price:
+            log.critical('cannot_repair_sl_no_price', inst_id=trade.inst_id)
+            return
+
+        try:
+            new_sl_id = await self._client.place_stop_loss(
+                inst_id=trade.inst_id,
+                side=close_side,
+                size=trade.size,
+                trigger_price=trade.stop_loss_price,
+            )
+            trade.stop_loss_algo_id = new_sl_id
+            log.warning('barrier_sl_repaired', inst_id=trade.inst_id, new_algo_id=new_sl_id)
+        except Exception:
+            log.critical(
+                'barrier_sl_repair_failed_closing',
+                inst_id=trade.inst_id,
+                msg='Closing position — cannot maintain safety invariant without SL',
+            )
+            try:
+                ticker = await self._client.get_ticker(trade.inst_id)
+                await self.close_trade(
+                    trade.inst_id,
+                    current_price=ticker.last,
+                    reason='barrier_repair_failed',
+                )
+            except Exception:
+                log.critical(
+                    'barrier_repair_close_failed',
+                    inst_id=trade.inst_id,
+                    msg='MANUAL INTERVENTION REQUIRED',
+                )
+
+    async def _repair_take_profit(self, trade: TrackedTrade, close_side: Side) -> None:
+        """Re-place a missing take-profit."""
+        if not trade.take_profit_price:
+            log.warning('cannot_repair_tp_no_price', inst_id=trade.inst_id)
+            return
+
+        try:
+            new_tp_id = await self._client.place_take_profit(
+                inst_id=trade.inst_id,
+                side=close_side,
+                size=trade.size,
+                trigger_price=trade.take_profit_price,
+            )
+            trade.take_profit_algo_id = new_tp_id
+            log.warning('barrier_tp_repaired', inst_id=trade.inst_id, new_algo_id=new_tp_id)
+        except Exception:
+            log.warning(
+                'barrier_tp_repair_failed',
+                inst_id=trade.inst_id,
+                msg='TP repair failed — position still protected by SL',
+            )

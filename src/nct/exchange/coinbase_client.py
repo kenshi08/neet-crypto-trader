@@ -682,6 +682,27 @@ class CoinbaseClient(IExchange):
         )
         return response
 
+    async def get_algo_order_status(
+        self, inst_id: str, algo_order_id: str,
+    ) -> OrderStatus:
+        if algo_order_id.startswith('dry_'):
+            return OrderStatus.PENDING
+
+        try:
+            result = self._rest_client.get_order(order_id=algo_order_id)
+            order_data = getattr(result, 'order', result)
+            status = getattr(order_data, 'status', '')
+            if status in ('OPEN', 'PENDING'):
+                return OrderStatus.PENDING
+            if status == 'FILLED':
+                return OrderStatus.FILLED
+            if status in ('CANCELLED', 'EXPIRED', 'FAILED'):
+                return OrderStatus.CANCELLED
+            return OrderStatus.CANCELLED
+        except Exception:
+            log.exception('get_algo_order_status_failed', algo_order_id=algo_order_id)
+            return OrderStatus.CANCELLED
+
     # ===================================================================
     # Parsers (Coinbase response → internal models)
     # ===================================================================

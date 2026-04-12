@@ -73,6 +73,7 @@ class TradingAgent:
         self._executor: OrderExecutor | None = None
         self._strategy: IStrategy | None = None
         self._notifier: TelegramNotifier | None = None
+        self._reconciliation_counter: int = 0
 
     async def initialize(self) -> bool:
         """Initialize all components. Returns True if successful."""
@@ -285,6 +286,12 @@ class TradingAgent:
                 )
             return
 
+        # Periodic reconciliation + barrier verification
+        self._reconciliation_counter += 1
+        if self._reconciliation_counter >= self._config.trading.reconciliation_interval:
+            self._reconciliation_counter = 0
+            await self._run_reconciliation()
+
         # Check time-limited positions
         current_prices = await self._get_current_prices()
         if current_prices:
@@ -413,6 +420,25 @@ class TradingAgent:
                 log.warning('ticker_fetch_failed', pair=pair)
 
         return prices
+
+    async def _run_reconciliation(self) -> None:
+        """Run position reconciliation and barrier verification."""
+        # Position reconciliation
+        try:
+            events = await self._portfolio.reconcile()
+            for inst_id, event_type in events:
+                if self._notifier:
+                    await self._notifier.notify_reconciliation(
+                        event_type=event_type, inst_id=inst_id,
+                    )
+        except Exception:
+            log.exception('reconciliation_error')
+
+        # Barrier verification (SL/TP still active)
+        try:
+            await self._executor.verify_barriers()
+        except Exception:
+            log.exception('barrier_verification_error')
 
     async def shutdown(self) -> None:
         """Graceful shutdown: stop feed, cancel orders, persist state, close DB."""

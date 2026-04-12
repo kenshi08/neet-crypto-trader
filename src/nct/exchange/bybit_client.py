@@ -175,6 +175,29 @@ class BybitClient(IExchange):
     def is_demo(self) -> bool:
         return self._demo_mode
 
+    async def get_algo_order_status(
+        self, inst_id: str, algo_order_id: str,
+    ) -> OrderStatus:
+        if algo_order_id.startswith('dry_'):
+            return OrderStatus.PENDING
+
+        try:
+            result = self._client.get_open_orders(
+                category='spot', orderId=algo_order_id,
+            )
+            data = self._check_response(result, context='get_algo_order_status')
+            orders = data.get('list', []) if isinstance(data, dict) else []
+            if orders:
+                status = orders[0].get('orderStatus', '')
+                if status in ('New', 'Untriggered', 'PartiallyFilled'):
+                    return OrderStatus.PENDING
+                if status == 'Filled':
+                    return OrderStatus.FILLED
+            return OrderStatus.CANCELLED
+        except Exception:
+            log.exception('get_algo_order_status_failed', algo_order_id=algo_order_id)
+            return OrderStatus.CANCELLED
+
     # ===================================================================
     # Market Data
     # ===================================================================

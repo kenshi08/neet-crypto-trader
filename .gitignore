@@ -31,3 +31,14 @@ Thumbs.db
 
 # Docker
 docker-compose.override.yml
+
+# Claude Code — ephemeral/personal files
+.claude/worktrees/
+.claude/plans/
+.claude/settings.local.json
+.claude/scheduled-tasks/
+CLAUDE.local.md
+
+# Test / build caches
+.pytest_cache/
+.ruff_cache/
