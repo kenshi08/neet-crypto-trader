@@ -193,6 +193,11 @@ class RiskConfig(BaseModel):
     volatility_circuit_breaker_multiplier: float = 0.0  # 0 = disabled
     volatility_lookback_candles: int = 20
     volatility_reference_pair: str = ''
+    use_volatility_parity: bool = False  # ATR-inverse position sizing
+    target_risk_pct: float = 1.0  # target risk per trade as % of budget
+    drawdown_scaling: bool = False  # reduce size after consecutive losses
+    drawdown_reduction_per_loss: float = 15.0  # reduce size by N% per loss
+    drawdown_max_reduction_pct: float = 60.0  # floor: min 40% of normal size
 
     @field_validator(
         'stop_loss_pct',
