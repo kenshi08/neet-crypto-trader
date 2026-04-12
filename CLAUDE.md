@@ -24,13 +24,26 @@ A multi-exchange crypto trading agent that automates short-term speculative trad
 Config (TOML + .env, EXCHANGE selector, Pydantic validated)
         |
 Exchange Factory → IExchange (CoinbaseClient | OKXClient | BybitClient)
-        |  (@retrier decorator, dry-run branch, server-side SL/TP)
-Strategy Engine (IStrategy ABC, plugin loading, pandas-ta indicators)
-        |  SignalResult
-Risk Manager (BudgetManager + PositionSizer + ProtectionManager)
-        |  TradeDecision (approved, size, SL, TP, time_limit)
-Executor (place order + server-side SL/TP, track lifecycle, report P&L)
+        |
+MarketSelector (volume, spread, blacklist filter)
+        |
+Strategy Engine (IStrategy ABC → SignalResult)
+        |
+DiagnosticEngine ← RiskManager (budget + sizing + protections + correlation)
+        |               TradeDecision (approved, size, SL, TP, time_limit)
+OrderExecutor (atomic SL/TP, trailing stop, breakeven, partial TP)
+        |
+PortfolioTracker (reconciliation, barrier verification)
+        |
+TelegramNotifier (inline keyboard UI, severity filtering, audit trail)
 ```
+
+### Codebase Metrics
+
+- **Source**: 7,919 lines across 35 files in 6 packages
+- **Tests**: 434 tests across 37 files (6,330 lines)
+- **Scripts**: 4 scripts (1,207 lines)
+- **DB tables**: 6 (trades, budget_periods, daily_stats, executor_log, trade_analytics, telegram_commands)
 
 ### Key Design Principles (from competitive analysis)
 
@@ -44,6 +57,16 @@ These are drawn from analyzing Freqtrade (48.5k stars), Hummingbot (18k stars), 
 6. **Credential isolation** — Copy API keys to exchange config, scrub from main config dict to prevent accidental logging.
 7. **Mode is unmistakable** — `RunningMode` announced at startup resolves to exactly one of `PAPER_DRY_RUN`, `DEMO_REAL_BALANCE`, or `LIVE_REAL_MONEY` (#39).
 8. **Backtests model fees AND slippage** — `run_backtest()` defaults to 0.4% per side (Coinbase taker) and 0.05% slippage per market order. Stop-losses model gap-through — a candle that opens below the stop fills at the open, not the trigger (#38, execution realism).
+9. **DiagnosticEngine mirrors RiskManager** — `diagnostics.py` runs the same checks as `evaluate_trade()` but collects per-gate pass/fail results instead of short-circuiting. Used by `/why` and `/signal`. Keeps RiskManager single-responsibility.
+10. **Reconciliation detects AND fixes** — `PortfolioTracker.reconcile()` auto-closes stale trades. `OrderExecutor.verify_barriers()` re-places missing SL/TP. Both run periodically. Untracked positions are flagged but not auto-adopted (too risky).
+11. **Exit management is unified** — Trailing stop, breakeven move, and partial profit taking compose in `executor.check_exit_management()`: breakeven fires first (lower threshold), trailing takes over (higher threshold), partial TP fires independently at staged targets.
+12. **Notifier is a UI layer, not business logic** — `notifier.py` calls into agent components but never makes risk or trading decisions. All commands go through the same gates as automated trading.
+
+### Current Deployment
+
+- **VPS**: Hetzner, Docker, Coinbase demo mode
+- **Config**: `feature_test.toml` — exercises all Phase 7-12 features (5m candles, tight SL/TP, trailing, breakeven, partial TP, correlation limits, volatility breaker, quiet hours)
+- **Update process**: `git pull origin main && docker compose build --no-cache && docker compose up -d`
 
 ## Project Structure
 
