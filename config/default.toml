@@ -98,6 +98,9 @@ bocpd_hazard_rate = 0.004       # BOCPD: expected changepoint frequency (~1/250 
 meta_model_path = ""            # Path to trained XGBoost model (.json), empty = TA fallback
 no_trade_threshold = 0.55       # Meta-model P(profitable) below this = no trade
 full_size_threshold = 0.70      # Meta-model P(profitable) above this = full position
+llm_enabled = true              # LLM anomaly guard: blocks trades during regime conflicts
+llm_model = "claude-haiku-4-5-20251001"  # Fast + cheap (~$0.001/call)
+llm_max_calls_per_hour = 30     # Rate limit for LLM API calls
 
 # Pairs Kalman strategy — statistical arbitrage on cointegrated pairs.
 # Set trading.strategy = "pairs_kalman" to activate.
