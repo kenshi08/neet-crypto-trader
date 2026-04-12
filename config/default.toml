@@ -22,6 +22,13 @@ trailing_stop_activation_pct = 2.0
 trailing_stop_delta_pct = 1.0
 min_signal_confidence = 0.6     # Minimum strategy confidence to enter a trade
 
+[telegram]
+min_severity = "low"                # minimum severity to send: low, medium, high, critical
+quiet_hours_start = -1              # hour 0-23 (-1 = disabled)
+quiet_hours_end = -1
+quiet_hours_timezone = "UTC"
+quiet_hours_min_severity = "critical"  # only critical alerts during quiet hours
+
 # Strategy-specific parameters under [strategy.<name>].
 # The active section is whichever matches `trading.strategy` above.
 

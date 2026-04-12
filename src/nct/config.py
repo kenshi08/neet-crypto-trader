@@ -161,8 +161,18 @@ class RiskConfig(BaseModel):
 class TelegramConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix='TELEGRAM_')
 
+    # Credentials (from .env only)
     token: str = ''
     chat_id: str = ''
+
+    # Alert filtering (from TOML)
+    min_severity: str = 'low'
+
+    # Quiet hours (from TOML) — suppress non-critical alerts during sleep
+    quiet_hours_start: int = -1   # hour 0-23, -1 = disabled
+    quiet_hours_end: int = -1
+    quiet_hours_timezone: str = 'UTC'
+    quiet_hours_min_severity: str = 'critical'
 
     @property
     def enabled(self) -> bool:
@@ -212,7 +222,8 @@ def load_config(config_path: Path | None = None) -> AppConfig:
     okx = OKXCredentials()
     bybit = BybitCredentials()
     coinbase = CoinbaseCredentials()
-    telegram = TelegramConfig()
+    telegram_toml = toml_data.get('telegram', {})
+    telegram = TelegramConfig(**telegram_toml)
     exchange_selector = _ExchangeSelector()
 
     trading = TradingConfig(**toml_data.get('trading', {}))

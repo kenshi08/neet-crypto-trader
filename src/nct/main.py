@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 
 from nct.config import AppConfig, load_config
 from nct.db import Database, get_db_path
+from nct.diagnostics import DiagnosticEngine
 from nct.exceptions import ExchangeError
 from nct.exchange.base import IExchange
 from nct.exchange.factory import create_exchange_client
@@ -177,7 +178,19 @@ class TradingAgent:
             self._client, cache_ttl_seconds=self._config.trading.poll_interval_seconds,
         )
 
-        # 12. Market feed (WebSocket) — currently OKX-only.
+        # 12. Diagnostic engine (for /why and /signal commands)
+        self._diagnostics = DiagnosticEngine(
+            strategy=self._strategy,
+            risk_config=self._config.risk,
+            trading_config=self._config.trading,
+            budget_manager=self._budget_manager,
+            position_sizer=self._position_sizer,
+            protection_manager=self._protection_manager,
+            data_provider=self._data_provider,
+            portfolio=self._portfolio,
+        )
+
+        # 13. Market feed (WebSocket) — currently OKX-only.
         # For Bybit, we fall back to REST polling via DataProvider.
         if self._config.exchange == 'okx':
             self._market_feed = MarketFeed(
@@ -185,11 +198,17 @@ class TradingAgent:
                 demo_mode=active_creds.demo_mode,
             )
 
-        # 13. Telegram notifier (optional)
+        # 14. Telegram notifier (optional)
         if self._config.telegram.enabled:
+            tg = self._config.telegram
             self._notifier = TelegramNotifier(
-                token=self._config.telegram.token,
-                chat_id=self._config.telegram.chat_id,
+                token=tg.token,
+                chat_id=tg.chat_id,
+                min_severity=tg.min_severity,
+                quiet_hours_start=tg.quiet_hours_start,
+                quiet_hours_end=tg.quiet_hours_end,
+                quiet_hours_timezone=tg.quiet_hours_timezone,
+                quiet_hours_min_severity=tg.quiet_hours_min_severity,
             )
             self._notifier.set_agent(self)
 
