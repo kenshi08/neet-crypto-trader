@@ -20,9 +20,15 @@ stop_loss_pct = 3.0             # Per-trade stop-loss
 take_profit_pct = 5.0           # Per-trade take-profit
 time_limit_seconds = 3600       # Close position after 1 hour if no SL/TP hit
 trailing_stop = false
-trailing_stop_activation_pct = 2.0
-trailing_stop_delta_pct = 1.0
+trailing_stop_activation_pct = 2.0  # Activate trailing after +2% unrealized
+trailing_stop_delta_pct = 1.0       # Trail 1% behind high-water mark
+breakeven_trigger_pct = 0           # Move SL to breakeven at +N%, 0 = disabled
 min_signal_confidence = 0.6     # Minimum strategy confidence to enter a trade
+
+# Partial profit taking — close fractions at intermediate targets
+# [[risk.partial_tp]]
+# pct = 3.0           # trigger at +3%
+# close_fraction = 0.5  # close 50% of position
 max_correlated_positions = 2    # Max positions from same correlation group
 volatility_circuit_breaker_multiplier = 0.0  # 0 = disabled; e.g. 3.0 = halt if ATR > 3x median
 volatility_lookback_candles = 20

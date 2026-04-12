@@ -315,12 +315,17 @@ class TradingAgent:
             self._reconciliation_counter = 0
             await self._run_reconciliation()
 
-        # Check time-limited positions
+        # Check time-limited positions and exit management
         current_prices = await self._get_current_prices()
         if current_prices:
             await self._executor.check_and_close_expired(
                 time_limit_seconds=self._config.risk.time_limit_seconds,
                 current_prices=current_prices,
+            )
+            # Trailing stops, breakeven moves, partial profit taking
+            await self._executor.check_exit_management(
+                current_prices=current_prices,
+                risk_config=self._config.risk,
             )
 
         # Filter pairs by market quality (volume, spread, blacklist)

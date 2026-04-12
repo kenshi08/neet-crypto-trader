@@ -154,6 +154,8 @@ class RiskConfig(BaseModel):
     trailing_stop: bool = False
     trailing_stop_activation_pct: Decimal = Decimal('2.0')
     trailing_stop_delta_pct: Decimal = Decimal('1.0')
+    breakeven_trigger_pct: Decimal = Decimal('0')  # 0 = disabled; e.g. 1.5 = move SL to breakeven at +1.5%
+    partial_tp: list[dict] = Field(default_factory=list)  # e.g. [{"pct": 3.0, "close_fraction": 0.5}]
     min_signal_confidence: float = 0.6
     correlation_groups: dict[str, list[str]] = Field(default_factory=dict)
     max_correlated_positions: int = 2
@@ -166,6 +168,7 @@ class RiskConfig(BaseModel):
         'take_profit_pct',
         'trailing_stop_activation_pct',
         'trailing_stop_delta_pct',
+        'breakeven_trigger_pct',
         mode='before',
     )
     @classmethod
