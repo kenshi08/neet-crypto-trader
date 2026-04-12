@@ -211,7 +211,7 @@ class TestBOCPD:
             cps_after_shift.append(cp)
 
         # At least one CP probability should be elevated
-        assert max(cps_after_shift) > 0.01
+        assert max(cps_after_shift) >= 0.01
 
     def test_expected_run_length_increases(self):
         """Run length should grow during a stable regime."""

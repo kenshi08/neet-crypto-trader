@@ -47,6 +47,7 @@ def executor(mock_client, mock_portfolio):
 def _make_trade(**overrides) -> TrackedTrade:
     defaults = {
         'trade_id': 1,
+        'exchange': '',
         'inst_id': 'BTC-USD',
         'side': 'buy',
         'size': Decimal('0.01'),

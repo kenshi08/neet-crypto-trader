@@ -41,7 +41,7 @@ async def tracker(mock_client: OKXClient, db: Database) -> PortfolioTracker:
 class TestTrackedTrade:
     def test_cost_usdt(self):
         trade = TrackedTrade(
-            trade_id=1, inst_id='BTC-USDT', side='buy',
+            exchange='', trade_id=1, inst_id='BTC-USDT', side='buy',
             size=Decimal('0.01'), entry_price=Decimal('67500'),
             fee=Decimal('0.675'),
         )
@@ -49,7 +49,7 @@ class TestTrackedTrade:
 
     def test_unrealized_pnl_buy_profit(self):
         trade = TrackedTrade(
-            trade_id=1, inst_id='BTC-USDT', side='buy',
+            exchange='', trade_id=1, inst_id='BTC-USDT', side='buy',
             size=Decimal('0.01'), entry_price=Decimal('67500'),
             fee=Decimal('0.675'),
         )
@@ -59,7 +59,7 @@ class TestTrackedTrade:
 
     def test_unrealized_pnl_buy_loss(self):
         trade = TrackedTrade(
-            trade_id=1, inst_id='BTC-USDT', side='buy',
+            exchange='', trade_id=1, inst_id='BTC-USDT', side='buy',
             size=Decimal('0.01'), entry_price=Decimal('67500'),
             fee=Decimal('0.675'),
         )
@@ -69,7 +69,7 @@ class TestTrackedTrade:
 
     def test_unrealized_pnl_sell_profit(self):
         trade = TrackedTrade(
-            trade_id=1, inst_id='BTC-USDT', side='sell',
+            exchange='', trade_id=1, inst_id='BTC-USDT', side='sell',
             size=Decimal('0.01'), entry_price=Decimal('67500'),
             fee=Decimal('0.675'),
         )

@@ -45,13 +45,13 @@ class TestReconcileStaleTradesRemoval:
     async def test_stale_trade_auto_closed(self, tracker, mock_client):
         """If exchange shows positions but not BTC-USD, close the stale trade."""
         tracker._open_trades['BTC-USD'] = TrackedTrade(
-            trade_id=1, inst_id='BTC-USD', side='buy',
+            exchange='', trade_id=1, inst_id='BTC-USD', side='buy',
             size=Decimal('0.01'), entry_price=Decimal('64000'),
             fee=Decimal('0.1'),
         )
         # Also track ETH-USD so it doesn't appear as untracked
         tracker._open_trades['ETH-USD'] = TrackedTrade(
-            trade_id=2, inst_id='ETH-USD', side='buy',
+            exchange='', trade_id=2, inst_id='ETH-USD', side='buy',
             size=Decimal('0.1'), entry_price=Decimal('3000'),
             fee=Decimal('0.01'),
         )
@@ -73,7 +73,7 @@ class TestReconcileStaleTradesRemoval:
     async def test_no_stale_if_exchange_returns_empty(self, tracker, mock_client):
         """Don't auto-close if exchange returns no positions (e.g., Coinbase spot)."""
         tracker._open_trades['BTC-USD'] = TrackedTrade(
-            trade_id=1, inst_id='BTC-USD', side='buy',
+            exchange='', trade_id=1, inst_id='BTC-USD', side='buy',
             size=Decimal('0.01'), entry_price=Decimal('64000'),
             fee=Decimal('0.1'),
         )
@@ -108,7 +108,7 @@ class TestReconcileNoIssues:
     async def test_matching_positions_no_events(self, tracker, mock_client):
         """When DB and exchange agree, no events should fire."""
         tracker._open_trades['BTC-USD'] = TrackedTrade(
-            trade_id=1, inst_id='BTC-USD', side='buy',
+            exchange='', trade_id=1, inst_id='BTC-USD', side='buy',
             size=Decimal('0.01'), entry_price=Decimal('64000'),
             fee=Decimal('0.1'),
         )
