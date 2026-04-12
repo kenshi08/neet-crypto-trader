@@ -1,0 +1,136 @@
+# Paper-validation config — 2-week validation protocol before live deployment.
+#
+# Week 1: OKX SG demo, regime detection enabled, spot-only (long signals)
+# Week 2: Switch to Hyperliquid testnet, long + short, full feature set
+#
+# Go/no-go criteria (measurable via /stats):
+#   - Win rate > 45%
+#   - Max drawdown < 10% of budget
+#   - Zero barrier failures (no unprotected positions)
+#   - Paper results within 20% of backtest predictions
+#
+# Usage: NCT_CONFIG=config/paper-validation.toml in .env
+
+[trading]
+pairs = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "AVAX-USDT", "LINK-USDT"]
+strategy = "trend_following"        # Default fallback when regime is disabled/ambiguous
+timeframe = "15m"
+max_open_positions = 3
+poll_interval_seconds = 15
+reconciliation_interval = 5
+
+# Regime detection — auto-select strategy per pair
+auto_regime_detection = true
+regime_timeframe = "1H"
+
+# Multi-timeframe confirmation
+confirmation_timeframes = ["1H"]
+
+[trading.regime_map]
+trending_up = "trend_following"
+trending_down = "trend_following"
+ranging_low_vol = "mean_reversion"
+ranging_high_vol = "volatility_breakout"
+extreme_vol = ""
+
+[budget]
+period = "weekly"
+amount_usdt = 300
+max_loss_pct = 8.0
+max_gain_pct = 20.0
+max_position_pct = 25.0
+daily_loss_limit_usdt = 40
+daily_notional_cap_usdt = 800
+
+[risk]
+stop_loss_pct = 2.5
+take_profit_pct = 4.0
+time_limit_seconds = 3600
+min_signal_confidence = 0.5
+
+# Trailing + breakeven
+trailing_stop = true
+trailing_stop_activation_pct = 2.0
+trailing_stop_delta_pct = 0.8
+breakeven_trigger_pct = 1.5
+
+# Fee-aware gate (OKX default — change to 0.045 for Hyperliquid)
+exchange_fee_pct = 0.1
+min_profit_after_fees_pct = 0.5
+
+# Volatility parity sizing
+use_volatility_parity = true
+target_risk_pct = 1.0
+
+# Drawdown protection
+drawdown_scaling = true
+drawdown_reduction_per_loss = 15.0
+drawdown_max_reduction_pct = 60.0
+
+# Correlation limits
+max_correlated_positions = 2
+
+# Volatility circuit breaker
+volatility_circuit_breaker_multiplier = 2.5
+volatility_lookback_candles = 20
+volatility_reference_pair = "BTC-USDT"
+
+[risk.correlation_groups]
+large_cap = ["BTC-USDT", "ETH-USDT", "SOL-USDT"]
+mid_cap = ["AVAX-USDT", "LINK-USDT"]
+
+[[risk.partial_tp]]
+pct = 2.5
+close_fraction = 0.4
+
+[market_selection]
+min_volume_usdt = 50000
+max_spread_pct = 0.8
+blacklist = []
+
+[telegram]
+min_severity = "low"
+quiet_hours_start = 23
+quiet_hours_end = 7
+quiet_hours_timezone = "Asia/Singapore"
+quiet_hours_min_severity = "high"
+
+[strategy.momentum]
+rsi_period = 14
+rsi_oversold = 32.0
+rsi_overbought = 68.0
+macd_fast = 12
+macd_slow = 26
+macd_signal = 9
+
+[strategy.mean_reversion]
+bb_period = 20
+bb_std = 2.0
+volume_ma_period = 20
+volume_multiplier = 1.3
+atr_period = 14
+atr_sl_multiplier = 1.5
+atr_tp_multiplier = 2.0
+
+[strategy.trend_following]
+ema_fast = 9
+ema_slow = 21
+adx_period = 14
+adx_threshold = 23.0
+atr_period = 14
+atr_sl_multiplier = 2.0
+atr_tp_multiplier = 3.0
+volume_ma_period = 20
+volume_multiplier = 1.2
+
+[strategy.volatility_breakout]
+lookback_period = 20
+atr_period = 14
+breakout_atr_multiplier = 0.4
+atr_sl_multiplier = 1.0
+atr_tp_multiplier = 2.0
+volume_ma_period = 20
+volume_multiplier = 1.2
+use_squeeze = true
+keltner_period = 20
+keltner_atr_multiplier = 1.5
