@@ -550,3 +550,7 @@ class OKXClient(IExchange):
     @property
     def is_demo(self) -> bool:
         return self._demo_mode
+
+    @property
+    def supports_shorting(self) -> bool:
+        return True

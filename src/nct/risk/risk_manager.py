@@ -18,6 +18,7 @@ log = structlog.get_logger()
 @dataclass(frozen=True, slots=True)
 class TradeDecision:
     approved: bool
+    side: str = 'buy'
     size: Decimal = Decimal(0)
     stop_loss_price: Decimal = Decimal(0)
     take_profit_price: Decimal = Decimal(0)
@@ -46,6 +47,7 @@ class RiskManager:
         risk_config: RiskConfig,
         trading_config: TradingConfig,
         portfolio=None,
+        supports_shorting: bool = False,
     ) -> None:
         self._budget = budget_manager
         self._sizer = position_sizer
@@ -53,6 +55,7 @@ class RiskManager:
         self._risk = risk_config
         self._trading = trading_config
         self._portfolio = portfolio  # PortfolioTracker for correlation checks
+        self._supports_shorting = supports_shorting
 
     def evaluate_trade(
         self,
@@ -75,7 +78,13 @@ class RiskManager:
         if lock.locked:
             return self._deny(lock.reason)
 
-        # 1b. Correlation-aware position limits
+        # 1b. Short-selling capability check
+        if side == 'sell' and not self._supports_shorting:
+            return self._deny(
+                'Exchange does not support short selling (spot-only)'
+            )
+
+        # 1c. Correlation-aware position limits
         corr_deny = self._check_correlation(inst_id)
         if corr_deny:
             return self._deny(corr_deny)
@@ -121,6 +130,7 @@ class RiskManager:
 
         decision = TradeDecision(
             approved=True,
+            side=side,
             size=size,
             stop_loss_price=stop_loss_price,
             take_profit_price=take_profit_price,

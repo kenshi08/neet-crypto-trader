@@ -69,6 +69,7 @@ async def risk_manager(
         protection_manager=protections,
         risk_config=risk_config,
         trading_config=trading_config,
+        supports_shorting=True,
     )
 
 
@@ -231,3 +232,103 @@ class TestTradeDecisionImmutable:
         )
         with pytest.raises(AttributeError):
             decision.approved = False  # type: ignore[misc]
+
+
+# ===================================================================
+# Issue #90 — Side propagation through TradeDecision
+# ===================================================================
+
+
+class TestSidePropagation:
+    async def test_buy_side_in_decision(self, risk_manager: RiskManager):
+        decision = risk_manager.evaluate_trade(
+            inst_id='BTC-USDT', side='buy',
+            current_price=Decimal('100'), available_balance=Decimal('1000'),
+            signal_confidence=0.8, open_position_count=0,
+        )
+        assert decision.side == 'buy'
+
+    async def test_sell_side_in_decision(self, risk_manager: RiskManager):
+        decision = risk_manager.evaluate_trade(
+            inst_id='BTC-USDT', side='sell',
+            current_price=Decimal('100'), available_balance=Decimal('1000'),
+            signal_confidence=0.8, open_position_count=0,
+        )
+        assert decision.side == 'sell'
+
+    async def test_denied_trade_defaults_to_buy(self, risk_manager: RiskManager):
+        decision = risk_manager.evaluate_trade(
+            inst_id='BTC-USDT', side='sell',
+            current_price=Decimal('100'), available_balance=Decimal('1000'),
+            signal_confidence=0.1, open_position_count=0,
+        )
+        assert decision.approved is False
+        assert decision.side == 'buy'  # default for denials
+
+
+# ===================================================================
+# Issue #91 — Short-selling capability gating
+# ===================================================================
+
+
+class TestShortingCapability:
+    async def test_short_denied_on_spot_only(
+        self, db: Database, budget_config: BudgetConfig,
+        risk_config: RiskConfig, trading_config: TradingConfig,
+    ):
+        budget_mgr = BudgetManager(budget_config, db)
+        await budget_mgr.initialize()
+        sizer = PositionSizer(budget_config, risk_config)
+        rm = RiskManager(
+            budget_manager=budget_mgr, position_sizer=sizer,
+            protection_manager=ProtectionManager(),
+            risk_config=risk_config, trading_config=trading_config,
+            supports_shorting=False,
+        )
+        decision = rm.evaluate_trade(
+            inst_id='BTC-USDT', side='sell',
+            current_price=Decimal('100'), available_balance=Decimal('1000'),
+            signal_confidence=0.8, open_position_count=0,
+        )
+        assert decision.approved is False
+        assert 'short selling' in decision.denial_reason.lower()
+
+    async def test_short_allowed_on_perps(
+        self, db: Database, budget_config: BudgetConfig,
+        risk_config: RiskConfig, trading_config: TradingConfig,
+    ):
+        budget_mgr = BudgetManager(budget_config, db)
+        await budget_mgr.initialize()
+        sizer = PositionSizer(budget_config, risk_config)
+        rm = RiskManager(
+            budget_manager=budget_mgr, position_sizer=sizer,
+            protection_manager=ProtectionManager(),
+            risk_config=risk_config, trading_config=trading_config,
+            supports_shorting=True,
+        )
+        decision = rm.evaluate_trade(
+            inst_id='BTC-USDT', side='sell',
+            current_price=Decimal('100'), available_balance=Decimal('1000'),
+            signal_confidence=0.8, open_position_count=0,
+        )
+        assert decision.approved is True
+
+    async def test_buy_unaffected_by_shorting_flag(
+        self, db: Database, budget_config: BudgetConfig,
+        risk_config: RiskConfig, trading_config: TradingConfig,
+    ):
+        budget_mgr = BudgetManager(budget_config, db)
+        await budget_mgr.initialize()
+        sizer = PositionSizer(budget_config, risk_config)
+        rm = RiskManager(
+            budget_manager=budget_mgr, position_sizer=sizer,
+            protection_manager=ProtectionManager(),
+            risk_config=risk_config, trading_config=trading_config,
+            supports_shorting=False,
+        )
+        decision = rm.evaluate_trade(
+            inst_id='BTC-USDT', side='buy',
+            current_price=Decimal('100'), available_balance=Decimal('1000'),
+            signal_confidence=0.8, open_position_count=0,
+        )
+        assert decision.approved is True
