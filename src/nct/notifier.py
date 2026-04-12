@@ -7,6 +7,7 @@ The bot gracefully degrades if python-telegram-bot is not installed.
 from __future__ import annotations
 
 import asyncio
+import time
 from decimal import Decimal
 
 import structlog
@@ -84,6 +85,9 @@ class TelegramNotifier:
         self._quiet_tz = quiet_hours_timezone
         self._quiet_min_severity = parse_severity(quiet_hours_min_severity)
 
+        # Confirmation tokens for destructive commands (#47)
+        self._pending_confirmations: dict[str, tuple[str, float]] = {}  # token → (action, expiry)
+
     def set_agent(self, agent) -> None:
         """Set the TradingAgent reference for command handling."""
         self._agent = agent
@@ -103,6 +107,7 @@ class TelegramNotifier:
         self._app.add_handler(CommandHandler('signal', self._cmd_signal))
         self._app.add_handler(CommandHandler('stats', self._cmd_stats))
         self._app.add_handler(CommandHandler('close', self._cmd_close))
+        self._app.add_handler(CommandHandler('confirm', self._cmd_confirm))
         self._app.add_handler(CommandHandler('start', self._cmd_start))
         self._app.add_handler(CallbackQueryHandler(self._handle_callback))
 
@@ -255,13 +260,51 @@ class TelegramNotifier:
         await self._log_command(update, 'status')
 
     async def _cmd_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Kill switch — requires confirmation token (#47)."""
         if not self._agent or str(update.effective_chat.id) != self._chat_id:
             return
 
-        await update.message.reply_text('Activating kill switch...')
-        await self._log_command(update, 'stop')
-        task = asyncio.create_task(self._agent.kill_switch())
-        task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+        import random
+        token = str(random.randint(10000, 99999))
+        expiry = time.time() + 60  # 60-second TTL
+        self._pending_confirmations[token] = ('stop', expiry)
+
+        open_count = self._agent._portfolio.open_trade_count
+        await update.message.reply_text(
+            f'This will cancel all orders and close {open_count} position(s).\n'
+            f'Reply `/confirm {token}` within 60s to execute.',
+            parse_mode='Markdown',
+        )
+        await self._log_command(update, 'stop_requested')
+
+    async def _cmd_confirm(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Confirm a destructive command with a token (#47)."""
+        if not self._agent or str(update.effective_chat.id) != self._chat_id:
+            return
+
+        args = context.args or []
+        if not args:
+            await update.message.reply_text('Usage: /confirm <token>')
+            return
+
+        token = args[0]
+        pending = self._pending_confirmations.pop(token, None)
+        if not pending:
+            await update.message.reply_text('Invalid or expired token.')
+            return
+
+        action, expiry = pending
+        if time.time() > expiry:
+            await update.message.reply_text('Token expired. Run the command again.')
+            return
+
+        if action == 'stop':
+            await update.message.reply_text('Confirmed. Activating kill switch...')
+            await self._log_command(update, 'stop_confirmed')
+            task = asyncio.create_task(self._agent.kill_switch())
+            task.add_done_callback(
+                lambda t: t.exception() if not t.cancelled() else None,
+            )
 
     async def _cmd_pause(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not self._agent or str(update.effective_chat.id) != self._chat_id:
