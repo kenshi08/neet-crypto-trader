@@ -202,6 +202,12 @@ class CompositeStrategy(IStrategy):
         self, dataframe: pd.DataFrame, metadata: dict[str, Any],
     ) -> pd.DataFrame:
         """Generate entry signals using meta-model or fallback to best TA signal."""
+        # Initialize signal columns (required by base.py _extract_signal)
+        if 'enter_long' not in dataframe.columns:
+            dataframe['enter_long'] = False
+        if 'enter_short' not in dataframe.columns:
+            dataframe['enter_short'] = False
+
         if not self._meta.is_trained:
             return self._fallback_entry(dataframe, metadata)
 
