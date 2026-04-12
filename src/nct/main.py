@@ -80,6 +80,10 @@ class TradingAgent:
         self._notifier: TelegramNotifier | None = None
         self._reconciliation_counter: int = 0
 
+        # Multi-exchange manager (wraps single or multiple exchanges)
+        from nct.portfolio.multi_exchange import MultiExchangeManager
+        self._multi: MultiExchangeManager | None = None
+
     async def initialize(self) -> bool:
         """Initialize all components. Returns True if successful."""
         # Determine active exchange credentials based on config.exchange
@@ -213,6 +217,33 @@ class TradingAgent:
             budget_manager=self._budget_manager,
             protection_manager=self._protection_manager,
             db=self._db,
+        )
+
+        # 9b. Wrap in MultiExchangeManager (single-exchange for now)
+        from nct.config import PortfolioConfig
+        from nct.portfolio.multi_exchange import ExchangePortfolio, MultiExchangeManager
+        single_portfolio_config = PortfolioConfig(
+            exchange=self._config.exchange,
+            pairs=self._config.trading.pairs,
+            quote_currency='USDT',
+            budget_amount=self._config.budget.amount_usdt,
+            max_positions=self._config.trading.max_open_positions,
+        )
+        single_ep = ExchangePortfolio(
+            name=self._config.exchange,
+            config=single_portfolio_config,
+            client=self._client,
+            tracker=self._portfolio,
+            budget=self._budget_manager,
+            executor=self._executor,
+            data_provider=DataProvider(
+                self._client,
+                cache_ttl_seconds=self._config.trading.poll_interval_seconds,
+            ),
+        )
+        self._multi = MultiExchangeManager(
+            [single_ep],
+            max_global_positions=self._config.trading.max_open_positions,
         )
 
         # 10. Strategy — selected via config.trading.strategy, params from TOML

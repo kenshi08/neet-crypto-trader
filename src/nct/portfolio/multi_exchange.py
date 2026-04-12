@@ -1,207 +1,177 @@
-"""Multi-exchange portfolio manager — concurrent portfolio engines.
+"""Multi-exchange portfolio orchestrator.
 
-Runs independent trading strategies on multiple exchanges simultaneously,
-each optimized for the exchange's strengths:
+Owns N ExchangePortfolio instances, each with its own exchange client,
+PortfolioTracker, BudgetManager, OrderExecutor, and DataProvider.
+Provides cross-exchange coordination (same-asset overlap prevention,
+global position limits, aggregate status).
 
-  Hyperliquid: Kalman pairs + directional perps (0.045% fees)
-  OKX:         HMM-driven strategy rotation on alts (0.1% fees)
-  Coinbase:    Long-only high-conviction spot (0.4% fees)
-
-All engines share a common AlphaDataProvider (single source of truth for
-macro, funding, sentiment data) but make independent trading decisions.
-Cross-portfolio correlation checks prevent overexposure.
+Single-exchange mode: wraps the one exchange in a single-element list.
+Multi-exchange mode: creates one ExchangePortfolio per [[portfolios]] entry.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from decimal import Decimal
 
 import structlog
+
+from nct.config import PortfolioConfig
+from nct.exchange.base import IExchange
+from nct.portfolio.tracker import PortfolioTracker
+from nct.risk.budget_manager import BudgetManager
+from nct.strategy.data_provider import DataProvider
 
 log = structlog.get_logger()
 
 
-@dataclass(frozen=True, slots=True)
-class PortfolioConfig:
-    """Configuration for one exchange-specific portfolio."""
+@dataclass
+class ExchangePortfolio:
+    """All components for one exchange — the unit of multi-exchange management."""
 
-    exchange: str                          # 'hyperliquid', 'okx', 'coinbase'
-    strategy: str                          # Strategy name
-    pairs: list[str] = field(default_factory=list)
-    budget_allocation_pct: float = 33.3    # % of total budget
-    max_positions: int = 2
-    enabled: bool = True
-
-
-@dataclass(slots=True)
-class PortfolioState:
-    """Runtime state of one portfolio engine."""
-
-    exchange: str
-    strategy: str
-    open_positions: int = 0
-    total_trades: int = 0
-    realized_pnl: float = 0.0
-    win_count: int = 0
-    loss_count: int = 0
-    is_running: bool = False
-
-    @property
-    def win_rate(self) -> float:
-        total = self.win_count + self.loss_count
-        return self.win_count / total if total > 0 else 0.0
-
-
-@dataclass(frozen=True, slots=True)
-class MultiPortfolioStatus:
-    """Aggregate status across all portfolio engines."""
-
-    portfolios: list[PortfolioState]
-    total_open_positions: int
-    total_realized_pnl: float
-    aggregate_win_rate: float
-    cross_correlation_warnings: list[str]
+    name: str                          # 'okx', 'hyperliquid', 'coinbase'
+    config: PortfolioConfig
+    client: IExchange
+    tracker: PortfolioTracker
+    budget: BudgetManager
+    executor: object                   # OrderExecutor (avoid circular import)
+    data_provider: DataProvider
+    feed: object | None = None         # MarketFeed | HyperliquidMarketFeed
 
 
 class MultiExchangeManager:
-    """Orchestrates multiple portfolio engines across exchanges.
+    """Orchestrates N exchange portfolios with cross-exchange coordination.
 
-    Each portfolio runs independently with its own:
-      - Exchange client
-      - Strategy selection
-      - Budget allocation
-      - Position tracking
-
-    Cross-portfolio checks prevent:
-      - Same asset long on exchange A and exchange B simultaneously
-      - Total exposure exceeding global limits
+    Does NOT duplicate tracking — delegates to real PortfolioTracker and
+    BudgetManager instances that persist to the shared SQLite DB
+    (filtered by exchange column).
     """
 
     def __init__(
         self,
+        portfolios: list[ExchangePortfolio],
         *,
-        portfolio_configs: list[PortfolioConfig] | None = None,
-        max_total_positions: int = 6,
-        cross_correlation_pairs: dict[str, list[str]] | None = None,
+        max_global_positions: int = 6,
     ) -> None:
-        self._configs = portfolio_configs or []
-        self._max_total = max_total_positions
-        self._corr_pairs = cross_correlation_pairs or {}
+        self._portfolios: dict[str, ExchangePortfolio] = {
+            p.name: p for p in portfolios
+        }
+        self._max_global = max_global_positions
 
-        # Runtime state per portfolio
-        self._states: dict[str, PortfolioState] = {}
-        for cfg in self._configs:
-            if cfg.enabled:
-                self._states[cfg.exchange] = PortfolioState(
-                    exchange=cfg.exchange,
-                    strategy=cfg.strategy,
-                )
+    # ------------------------------------------------------------------
+    # Portfolio access
+    # ------------------------------------------------------------------
 
     @property
-    def active_exchanges(self) -> list[str]:
-        return [s.exchange for s in self._states.values() if s.is_running]
+    def exchanges(self) -> list[str]:
+        return list(self._portfolios.keys())
 
-    def get_status(self) -> MultiPortfolioStatus:
-        """Get aggregate status across all portfolio engines."""
-        states = list(self._states.values())
-        total_pos = sum(s.open_positions for s in states)
-        total_pnl = sum(s.realized_pnl for s in states)
-        total_wins = sum(s.win_count for s in states)
-        total_losses = sum(s.loss_count for s in states)
-        total_trades = total_wins + total_losses
-        agg_wr = total_wins / total_trades if total_trades > 0 else 0.0
-        warnings = self._check_cross_correlations()
+    @property
+    def portfolios(self) -> dict[str, ExchangePortfolio]:
+        return self._portfolios
 
-        return MultiPortfolioStatus(
-            portfolios=states,
-            total_open_positions=total_pos,
-            total_realized_pnl=total_pnl,
-            aggregate_win_rate=agg_wr,
-            cross_correlation_warnings=warnings,
-        )
+    def get_portfolio(self, exchange: str) -> ExchangePortfolio | None:
+        return self._portfolios.get(exchange)
 
-    def can_open_position(self, exchange: str, pair: str) -> tuple[bool, str]:
-        """Check if a new position is allowed, considering cross-portfolio limits.
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
 
-        Returns (allowed, reason).
+    async def initialize_all(self) -> None:
+        """Initialize all trackers and budgets from DB."""
+        for name, p in self._portfolios.items():
+            await p.tracker.initialize()
+            await p.budget.initialize()
+            log.info(
+                'exchange_portfolio_initialized',
+                exchange=name,
+                pairs=p.config.pairs,
+                quote=p.config.quote_currency,
+                budget=str(p.config.budget_amount),
+            )
+
+    async def close_all(self) -> None:
+        """Graceful shutdown — cancel open orders on all exchanges."""
+        for name, p in self._portfolios.items():
+            try:
+                await p.client.cancel_all_orders()
+                log.info('exchange_shutdown', exchange=name)
+            except Exception:
+                log.warning('exchange_shutdown_failed', exchange=name, exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Cross-exchange coordination
+    # ------------------------------------------------------------------
+
+    def can_open_position(
+        self, exchange: str, pair: str,
+    ) -> tuple[bool, str]:
+        """Check if a new position is allowed, considering cross-exchange limits.
+
+        Checks:
+        1. Per-exchange max_positions from PortfolioConfig
+        2. Global max_global_positions across all exchanges
+        3. Same base asset not already open on another exchange
         """
-        state = self._states.get(exchange)
-        if state is None:
+        portfolio = self._portfolios.get(exchange)
+        if portfolio is None:
             return False, f'Exchange {exchange} not configured'
 
-        # Check per-portfolio limit
-        cfg = next((c for c in self._configs if c.exchange == exchange), None)
-        if cfg and state.open_positions >= cfg.max_positions:
-            return False, f'{exchange}: max positions ({cfg.max_positions}) reached'
+        # Per-exchange position limit
+        open_count = portfolio.tracker.open_trade_count
+        if open_count >= portfolio.config.max_positions:
+            return False, (
+                f'{exchange}: max positions ({portfolio.config.max_positions}) reached'
+            )
 
-        # Check global limit
-        total = sum(s.open_positions for s in self._states.values())
-        if total >= self._max_total:
-            return False, f'Global max positions ({self._max_total}) reached'
+        # Global position limit
+        total = sum(p.tracker.open_trade_count for p in self._portfolios.values())
+        if total >= self._max_global:
+            return False, f'Global max positions ({self._max_global}) reached'
+
+        # Cross-exchange: same base asset check
+        base_asset = pair.split('-')[0] if '-' in pair else pair
+        for ex_name, p in self._portfolios.items():
+            if ex_name == exchange:
+                continue
+            for trade in p.tracker.open_trades:
+                trade_base = trade.inst_id.split('-')[0] if '-' in trade.inst_id else trade.inst_id
+                if trade_base == base_asset:
+                    return False, (
+                        f'{base_asset} already open on {ex_name} '
+                        f'(cross-exchange overlap)'
+                    )
 
         return True, 'ok'
 
-    def record_trade(
-        self, exchange: str, *, pnl: float, is_open: bool,
-    ) -> None:
-        """Record a trade result for the given exchange portfolio."""
-        state = self._states.get(exchange)
-        if state is None:
-            return
+    # ------------------------------------------------------------------
+    # Aggregate status
+    # ------------------------------------------------------------------
 
-        if is_open:
-            state.open_positions += 1
-        else:
-            state.open_positions = max(0, state.open_positions - 1)
-            state.total_trades += 1
-            state.realized_pnl += pnl
-            if pnl > 0:
-                state.win_count += 1
-            elif pnl < 0:
-                state.loss_count += 1
+    def get_aggregate_status(self) -> dict:
+        """Aggregate metrics across all exchange portfolios."""
+        total_positions = 0
+        total_pnl = Decimal(0)
+        per_exchange: list[dict] = []
 
-    def get_budget_allocation(self, exchange: str, total_budget: float) -> float:
-        """Get the budget allocated to a specific exchange portfolio."""
-        cfg = next((c for c in self._configs if c.exchange == exchange), None)
-        if cfg is None:
-            return 0.0
-        return total_budget * (cfg.budget_allocation_pct / 100)
+        for name, p in self._portfolios.items():
+            open_count = p.tracker.open_trade_count
+            pnl = p.budget.realized_pnl
+            budget_remaining = p.budget.budget_remaining
+            total_positions += open_count
+            total_pnl += pnl
 
-    def _check_cross_correlations(self) -> list[str]:
-        """Check for correlated positions across exchanges."""
-        warnings: list[str] = []
-        # This would check actual open positions in a real implementation.
-        # For now, return any configured correlation group warnings.
-        for _group_name, _pairs in self._corr_pairs.items():
-            # Placeholder: would check actual open positions per group.
-            pass
-        return warnings
+            per_exchange.append({
+                'exchange': name,
+                'quote_currency': p.config.quote_currency,
+                'open_positions': open_count,
+                'realized_pnl': str(pnl),
+                'budget_remaining': str(budget_remaining),
+                'budget_total': str(p.config.budget_amount),
+            })
 
-
-# ---------------------------------------------------------------------------
-# Default portfolio configurations
-# ---------------------------------------------------------------------------
-
-DEFAULT_PORTFOLIO_CONFIGS = [
-    PortfolioConfig(
-        exchange='hyperliquid',
-        strategy='pairs_kalman',
-        pairs=['BTC-USDT', 'ETH-USDT'],
-        budget_allocation_pct=40.0,
-        max_positions=2,
-    ),
-    PortfolioConfig(
-        exchange='okx',
-        strategy='composite',
-        pairs=['BTC-USDT', 'ETH-USDT', 'SOL-USDT', 'AVAX-USDT', 'LINK-USDT'],
-        budget_allocation_pct=35.0,
-        max_positions=3,
-    ),
-    PortfolioConfig(
-        exchange='coinbase',
-        strategy='composite',
-        pairs=['BTC-USD', 'ETH-USD'],
-        budget_allocation_pct=25.0,
-        max_positions=2,
-    ),
-]
+        return {
+            'total_positions': total_positions,
+            'total_pnl': str(total_pnl),
+            'exchanges': per_exchange,
+        }

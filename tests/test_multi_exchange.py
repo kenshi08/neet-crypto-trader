@@ -1,55 +1,78 @@
-"""Tests for the multi-exchange portfolio manager."""
+"""Tests for the multi-exchange portfolio orchestrator."""
 
 from __future__ import annotations
 
+from decimal import Decimal
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
-from nct.portfolio.multi_exchange import (
-    DEFAULT_PORTFOLIO_CONFIGS,
-    MultiExchangeManager,
-    MultiPortfolioStatus,
-    PortfolioConfig,
-    PortfolioState,
-)
+from nct.config import PortfolioConfig
+from nct.portfolio.multi_exchange import ExchangePortfolio, MultiExchangeManager
+from nct.portfolio.tracker import TrackedTrade
 
 # ---------------------------------------------------------------------------
-# Tests: PortfolioConfig
+# Helpers
 # ---------------------------------------------------------------------------
 
-class TestPortfolioConfig:
-    def test_defaults(self):
-        cfg = PortfolioConfig(exchange='okx', strategy='momentum')
-        assert cfg.budget_allocation_pct == 33.3
-        assert cfg.max_positions == 2
-        assert cfg.enabled is True
+def _mock_portfolio(exchange: str, pairs: list[str] | None = None) -> ExchangePortfolio:
+    """Create an ExchangePortfolio with mocked components."""
+    config = PortfolioConfig(
+        exchange=exchange,
+        pairs=pairs or ['BTC-USDT', 'ETH-USDT'],
+        quote_currency='USDT',
+        budget_amount=Decimal('100'),
+        max_positions=2,
+    )
+    mock_client = MagicMock()
+    mock_client.cancel_all_orders = AsyncMock()
 
-    def test_custom_values(self):
-        cfg = PortfolioConfig(
-            exchange='hyperliquid',
-            strategy='pairs_kalman',
-            pairs=['BTC-USDT', 'ETH-USDT'],
-            budget_allocation_pct=40.0,
-            max_positions=3,
-        )
-        assert cfg.pairs == ['BTC-USDT', 'ETH-USDT']
-        assert cfg.budget_allocation_pct == 40.0
+    mock_tracker = MagicMock()
+    mock_tracker.open_trade_count = 0
+    mock_tracker.open_trades = []
+    mock_tracker.initialize = AsyncMock()
+
+    mock_budget = MagicMock()
+    mock_budget.realized_pnl = Decimal('0')
+    mock_budget.budget_remaining = Decimal('100')
+    mock_budget.initialize = AsyncMock()
+
+    mock_executor = MagicMock()
+    mock_data = MagicMock()
+
+    return ExchangePortfolio(
+        name=exchange,
+        config=config,
+        client=mock_client,
+        tracker=mock_tracker,
+        budget=mock_budget,
+        executor=mock_executor,
+        data_provider=mock_data,
+    )
+
+
+def _make_tracked_trade(exchange: str, inst_id: str) -> TrackedTrade:
+    return TrackedTrade(
+        exchange=exchange,
+        trade_id=1,
+        inst_id=inst_id,
+        side='buy',
+        size=Decimal('0.01'),
+        entry_price=Decimal('100'),
+        fee=Decimal('0.1'),
+    )
 
 
 # ---------------------------------------------------------------------------
-# Tests: PortfolioState
+# Tests: ExchangePortfolio
 # ---------------------------------------------------------------------------
 
-class TestPortfolioState:
-    def test_win_rate_no_trades(self):
-        state = PortfolioState(exchange='okx', strategy='momentum')
-        assert state.win_rate == 0.0
-
-    def test_win_rate_with_trades(self):
-        state = PortfolioState(
-            exchange='okx', strategy='momentum',
-            win_count=7, loss_count=3,
-        )
-        assert state.win_rate == pytest.approx(0.7)
+class TestExchangePortfolio:
+    def test_basic_creation(self):
+        ep = _mock_portfolio('okx')
+        assert ep.name == 'okx'
+        assert ep.config.exchange == 'okx'
+        assert ep.config.quote_currency == 'USDT'
 
 
 # ---------------------------------------------------------------------------
@@ -58,40 +81,33 @@ class TestPortfolioState:
 
 class TestMultiExchangeManager:
     @pytest.fixture()
-    def configs(self):
-        return [
-            PortfolioConfig(
-                exchange='hyperliquid', strategy='pairs_kalman',
-                max_positions=2, budget_allocation_pct=40,
-            ),
-            PortfolioConfig(
-                exchange='okx', strategy='composite',
-                max_positions=3, budget_allocation_pct=35,
-            ),
-            PortfolioConfig(
-                exchange='coinbase', strategy='composite',
-                max_positions=2, budget_allocation_pct=25,
-            ),
-        ]
-
-    @pytest.fixture()
-    def manager(self, configs):
+    def manager(self):
         return MultiExchangeManager(
-            portfolio_configs=configs,
-            max_total_positions=6,
+            [
+                _mock_portfolio('hyperliquid', ['BTC-USDT', 'ETH-USDT']),
+                _mock_portfolio('okx', ['BTC-USDT', 'SOL-USDT']),
+                _mock_portfolio('coinbase', ['BTC-USD', 'ETH-USD']),
+            ],
+            max_global_positions=6,
         )
 
-    def test_active_exchanges_empty_initially(self, manager):
-        # Not running yet
-        assert manager.active_exchanges == []
+    def test_exchanges(self, manager):
+        assert set(manager.exchanges) == {'hyperliquid', 'okx', 'coinbase'}
 
-    def test_get_status(self, manager):
-        status = manager.get_status()
-        assert isinstance(status, MultiPortfolioStatus)
-        assert len(status.portfolios) == 3
-        assert status.total_open_positions == 0
+    def test_get_portfolio(self, manager):
+        ep = manager.get_portfolio('okx')
+        assert ep is not None
+        assert ep.name == 'okx'
 
-    def test_can_open_position_basic(self, manager):
+    def test_get_portfolio_unknown(self, manager):
+        assert manager.get_portfolio('binance') is None
+
+    def test_portfolios_dict(self, manager):
+        assert len(manager.portfolios) == 3
+
+    # -- Cross-exchange checks --
+
+    def test_can_open_basic(self, manager):
         allowed, _reason = manager.can_open_position('okx', 'BTC-USDT')
         assert allowed is True
 
@@ -100,97 +116,81 @@ class TestMultiExchangeManager:
         assert allowed is False
         assert 'not configured' in reason
 
-    def test_per_portfolio_position_limit(self, manager):
-        # Fill up hyperliquid (max 2)
-        manager.record_trade('hyperliquid', pnl=0.0, is_open=True)
-        manager.record_trade('hyperliquid', pnl=0.0, is_open=True)
-
-        allowed, reason = manager.can_open_position('hyperliquid', 'SOL-USDT')
+    def test_per_exchange_position_limit(self, manager):
+        manager.portfolios['okx'].tracker.open_trade_count = 2
+        allowed, reason = manager.can_open_position('okx', 'SOL-USDT')
         assert allowed is False
         assert 'max positions' in reason
 
     def test_global_position_limit(self):
-        configs = [
-            PortfolioConfig(exchange='okx', strategy='x', max_positions=10),
-        ]
         mgr = MultiExchangeManager(
-            portfolio_configs=configs, max_total_positions=2,
+            [_mock_portfolio('okx')],
+            max_global_positions=1,
         )
-        mgr.record_trade('okx', pnl=0.0, is_open=True)
-        mgr.record_trade('okx', pnl=0.0, is_open=True)
-
-        allowed, reason = mgr.can_open_position('okx', 'BTC')
+        mgr.portfolios['okx'].tracker.open_trade_count = 1
+        allowed, reason = mgr.can_open_position('okx', 'ETH-USDT')
         assert allowed is False
         assert 'Global' in reason
 
-    def test_record_trade_open(self, manager):
-        manager.record_trade('okx', pnl=0.0, is_open=True)
-        assert manager._states['okx'].open_positions == 1
+    def test_cross_exchange_overlap_blocked(self, manager):
+        trade = _make_tracked_trade('hyperliquid', 'BTC-USDT')
+        manager.portfolios['hyperliquid'].tracker.open_trades = [trade]
+        manager.portfolios['hyperliquid'].tracker.open_trade_count = 1
 
-    def test_record_trade_close_win(self, manager):
-        manager.record_trade('okx', pnl=0.0, is_open=True)
-        manager.record_trade('okx', pnl=5.0, is_open=False)
-        state = manager._states['okx']
-        assert state.open_positions == 0
-        assert state.win_count == 1
-        assert state.realized_pnl == 5.0
+        allowed, reason = manager.can_open_position('okx', 'BTC-USDT')
+        assert allowed is False
+        assert 'cross-exchange' in reason.lower()
 
-    def test_record_trade_close_loss(self, manager):
-        manager.record_trade('okx', pnl=0.0, is_open=True)
-        manager.record_trade('okx', pnl=-3.0, is_open=False)
-        state = manager._states['okx']
-        assert state.loss_count == 1
-        assert state.realized_pnl == -3.0
+    def test_no_overlap_different_base(self, manager):
+        trade = _make_tracked_trade('hyperliquid', 'BTC-USDT')
+        manager.portfolios['hyperliquid'].tracker.open_trades = [trade]
+        manager.portfolios['hyperliquid'].tracker.open_trade_count = 1
 
-    def test_aggregate_win_rate(self, manager):
-        manager.record_trade('okx', pnl=0.0, is_open=True)
-        manager.record_trade('okx', pnl=5.0, is_open=False)
-        manager.record_trade('hyperliquid', pnl=0.0, is_open=True)
-        manager.record_trade('hyperliquid', pnl=-2.0, is_open=False)
+        allowed, _reason = manager.can_open_position('okx', 'ETH-USDT')
+        assert allowed is True
 
-        status = manager.get_status()
-        assert status.aggregate_win_rate == pytest.approx(0.5)
-        assert status.total_realized_pnl == pytest.approx(3.0)
+    # -- Lifecycle --
 
-    def test_budget_allocation(self, manager):
-        total = 1000.0
-        assert manager.get_budget_allocation('hyperliquid', total) == 400.0
-        assert manager.get_budget_allocation('okx', total) == 350.0
-        assert manager.get_budget_allocation('coinbase', total) == 250.0
+    @pytest.mark.asyncio()
+    async def test_initialize_all(self, manager):
+        await manager.initialize_all()
+        for ep in manager.portfolios.values():
+            ep.tracker.initialize.assert_called_once()
+            ep.budget.initialize.assert_called_once()
 
-    def test_budget_allocation_unknown_exchange(self, manager):
-        assert manager.get_budget_allocation('binance', 1000.0) == 0.0
+    @pytest.mark.asyncio()
+    async def test_close_all(self, manager):
+        await manager.close_all()
+        for ep in manager.portfolios.values():
+            ep.client.cancel_all_orders.assert_called_once()
 
-    def test_disabled_portfolio_excluded(self):
-        configs = [
-            PortfolioConfig(exchange='okx', strategy='x', enabled=True),
-            PortfolioConfig(exchange='coinbase', strategy='y', enabled=False),
-        ]
-        mgr = MultiExchangeManager(portfolio_configs=configs)
-        assert 'okx' in mgr._states
-        assert 'coinbase' not in mgr._states
+    # -- Aggregate status --
 
-    def test_record_trade_unknown_exchange(self, manager):
-        # Should not crash
-        manager.record_trade('binance', pnl=5.0, is_open=True)
+    def test_aggregate_status_empty(self, manager):
+        status = manager.get_aggregate_status()
+        assert status['total_positions'] == 0
+        assert status['total_pnl'] == '0'
+        assert len(status['exchanges']) == 3
 
-    def test_open_positions_dont_go_negative(self, manager):
-        manager.record_trade('okx', pnl=-1.0, is_open=False)
-        assert manager._states['okx'].open_positions == 0
+    def test_aggregate_status_with_trades(self, manager):
+        manager.portfolios['okx'].tracker.open_trade_count = 2
+        manager.portfolios['okx'].budget.realized_pnl = Decimal('15.50')
+        manager.portfolios['hyperliquid'].tracker.open_trade_count = 1
+        manager.portfolios['hyperliquid'].budget.realized_pnl = Decimal('-3.20')
+
+        status = manager.get_aggregate_status()
+        assert status['total_positions'] == 3
+        assert Decimal(status['total_pnl']) == Decimal('12.30')
 
 
 # ---------------------------------------------------------------------------
-# Tests: Default configs
+# Tests: Single-exchange wrapping
 # ---------------------------------------------------------------------------
 
-class TestDefaultConfigs:
-    def test_default_configs_exist(self):
-        assert len(DEFAULT_PORTFOLIO_CONFIGS) == 3
-
-    def test_default_allocations_sum_to_100(self):
-        total = sum(c.budget_allocation_pct for c in DEFAULT_PORTFOLIO_CONFIGS)
-        assert total == 100.0
-
-    def test_default_exchanges(self):
-        exchanges = {c.exchange for c in DEFAULT_PORTFOLIO_CONFIGS}
-        assert exchanges == {'hyperliquid', 'okx', 'coinbase'}
+class TestSingleExchangeWrapping:
+    def test_single_exchange_works(self):
+        ep = _mock_portfolio('okx')
+        mgr = MultiExchangeManager([ep], max_global_positions=3)
+        assert mgr.exchanges == ['okx']
+        allowed, _ = mgr.can_open_position('okx', 'BTC-USDT')
+        assert allowed is True
