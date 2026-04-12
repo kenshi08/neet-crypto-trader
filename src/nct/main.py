@@ -87,6 +87,7 @@ class TradingAgent:
             'okx': self._config.okx,
             'bybit': self._config.bybit,
             'coinbase': self._config.coinbase,
+            'hyperliquid': self._config.hyperliquid,
         }
         active_creds = _creds_map[self._config.exchange]
 
