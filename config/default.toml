@@ -68,3 +68,19 @@ volume_multiplier = 1.2         # Volume must exceed avg * this for signal
 atr_period = 14
 atr_sl_multiplier = 1.5
 atr_tp_multiplier = 2.0
+
+[strategy.trend_following]
+ema_fast = 9                    # Fast EMA period
+ema_slow = 21                   # Slow EMA period
+adx_period = 14                 # ADX lookback period
+adx_threshold = 25.0            # Min ADX to confirm trend (0-100)
+atr_period = 14
+atr_sl_multiplier = 2.0         # Wider stop for trend trades
+atr_tp_multiplier = 3.0         # Larger target — let trends run
+
+[strategy.volatility_breakout]
+lookback_period = 20            # N-period high/low range
+atr_period = 14
+breakout_atr_multiplier = 0.5   # Min breakout distance as ATR multiple
+atr_sl_multiplier = 1.0         # Tight stop — quick exit on failed breakout
+atr_tp_multiplier = 2.0

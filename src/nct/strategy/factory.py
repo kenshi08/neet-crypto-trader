@@ -7,6 +7,8 @@ import structlog
 from nct.strategy.base import IStrategy
 from nct.strategy.mean_reversion import MeanReversionStrategy
 from nct.strategy.momentum import MomentumStrategy
+from nct.strategy.trend_following import TrendFollowingStrategy
+from nct.strategy.volatility_breakout import VolatilityBreakoutStrategy
 
 log = structlog.get_logger()
 
@@ -16,6 +18,8 @@ log = structlog.get_logger()
 _STRATEGY_REGISTRY: dict[str, type[IStrategy]] = {
     'momentum': MomentumStrategy,
     'mean_reversion': MeanReversionStrategy,
+    'trend_following': TrendFollowingStrategy,
+    'volatility_breakout': VolatilityBreakoutStrategy,
 }
 
 
